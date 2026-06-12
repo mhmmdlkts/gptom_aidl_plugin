@@ -1,12 +1,11 @@
 buildscript {
     repositories {
-        mavenLocal()
         google()
         mavenCentral()
     }
 
     dependencies {
-        classpath("com.android.tools.build:gradle:8.1.0")
+        classpath("com.android.tools.build:gradle:8.7.3")
     }
 }
 
@@ -17,18 +16,21 @@ plugins {
 group = "com.kreiseck.gptom_aidl_plugin"
 version = "1.0"
 
+// Die GPTom App2App AIDL-Bibliothek liegt als Maven-Repo im Plugin (android/repo),
+// damit der Build ohne mavenLocal auf jedem Rechner funktioniert.
+def gptomAidlRepo = uri("${projectDir}/repo")
+
 rootProject.allprojects {
     repositories {
-        mavenLocal()
         google()
         mavenCentral()
+        maven { url gptomAidlRepo }
     }
 }
 
-// Place the AAR here: gptom_aidl_plugin/android/libs/gptom_app2app_aidl.aar
 dependencies {
-    // GPTom App2App AIDL library (local .aar in android/libs)
-    implementation("com.gptom.app2app:aidl:1.24.0")
+    // GPTom App2App AIDL library (android/repo/com/gptom/app2app/aidl)
+    implementation("com.gptom.app2app:aidl:1.29.0")
     implementation 'com.google.code.gson:gson:2.11.0'
     testImplementation("junit:junit:4.13.2")
     testImplementation("org.mockito:mockito-core:5.0.0")

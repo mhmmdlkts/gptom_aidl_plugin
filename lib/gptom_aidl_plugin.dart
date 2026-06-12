@@ -3,7 +3,9 @@ import 'dart:io';
 import 'package:flutter/services.dart';
 import 'package:gptom_aidl_plugin/enums/transaction_type.dart';
 import 'package:gptom_aidl_plugin/gptom_aidl_plugin_ios.dart';
+import 'package:gptom_aidl_plugin/models/gptom_info.dart';
 import 'package:gptom_aidl_plugin/models/inquire_result.dart';
+import 'package:gptom_aidl_plugin/models/login_status.dart';
 import 'package:gptom_aidl_plugin/models/request_result.dart';
 import 'package:gptom_aidl_plugin/models/state_result.dart';
 
@@ -27,16 +29,27 @@ class GptomAidlPlugin {
   Future<bool> existGpTomApp({bool isDevAndroid = false}) {
     return GptomAidlPluginPlatform.instance.existGpTomApp(isDevAndroid: isDevAndroid);
   }
+
   // ---------------------------------------------------------------------------
-  // Beispiel: Bind Service (bereits vorhanden)
+  // Bind Service
   // ---------------------------------------------------------------------------
   Future<bool> bindService({bool isDevAndroid = false, String uriSchemeIOS = 'xxx'}) async {
-    print('aaa');
     if (Platform.isIOS) {
+      if (uriSchemeIOS.isEmpty || uriSchemeIOS == 'xxx') {
+        throw ArgumentError(
+          'uriSchemeIOS muss auf iOS gesetzt werden (das eigene URL-Scheme der App), '
+          'sonst kann GPTom das Ergebnis nicht zurückliefern.',
+        );
+      }
       GptomAidlPluginIOS.listenForGptomRedirectsIOS(uriSchemeIOS);
       return Future.value(true);
     }
     return GptomAidlPluginPlatform.instance.bindService(isDevAndroid: isDevAndroid);
+  }
+
+  /// Gibt die Service-Verbindung(en) auf Android wieder frei.
+  Future<void> unbindService() {
+    return GptomAidlPluginPlatform.instance.unbindService();
   }
 
   // ---------------------------------------------------------------------------
@@ -61,7 +74,7 @@ class GptomAidlPlugin {
   ///
   /// - [transactionId] muss von registerTransactionV2 kommen
   /// - [transactionType]: 1=SALE, 2=VOID, 3=REFUND, 4=CLOSE_BATCH, ...
-  /// - [amount]: in *100-Format (z.B. 1111 => 11.11 EUR)
+  /// - [amount]: in EUR (wird intern in Cent umgerechnet, 11.11 => 1111)
   /// - [tipAmount] (optional)
   /// - [originTransactionId] (bei VOID/REFUND)
   /// - [cancelMode]: 1= letzte Transaktion, 2=ältere Transaktionen (ggf. optional)
@@ -85,9 +98,11 @@ class GptomAidlPlugin {
     final params = <String, dynamic>{
       'transactionID': transactionId,
       'transactionType': transactionType.id,
-      if (amount != null) 'amount': (amount * 100).toInt(),
+      // round() statt toInt(): toInt() schneidet ab und macht aus
+      // 4.35 * 100 = 434.99999… sonst 434 Cent.
+      if (amount != null) 'amount': (amount * 100).round(),
       'openGptomUI': openGptomUI,
-      if (tipAmount != null) 'tipAmount': (tipAmount * 100).toInt(),
+      if (tipAmount != null) 'tipAmount': (tipAmount * 100).round(),
       if (originTransactionId != null) 'originTransactionID': originTransactionId,
       if (cancelMode != null) 'cancelMode': cancelMode.id,
       if (clientId != null) 'clientID': clientId,
@@ -188,6 +203,46 @@ class GptomAidlPlugin {
     );
   }
 
+  /// Rückerstattung (REFUND, transactionType 3) einer abgeschlossenen
+  /// Transaktion. Nur Android – auf iOS bietet das GPTom-URL-Scheme dafür
+  /// keinen Weg.
+  Future<RequestResult> refund({
+    String? transactionIdAndroid,
+    required String originTransactionId,
+    required double amount,
+    String? clientId,
+    bool printByPaymentApp = false,
+    Map<String, dynamic>? redirectInfo,
+    Map<String, dynamic>? clientInfo,
+    bool openGptomUI = true,
+    PreferableReceiptType? preferableReceiptType,
+  }) async {
+    if (Platform.isIOS) {
+      throw PlatformException(
+        code: 'PlatformError',
+        message: 'refund is not supported on iOS',
+      );
+    }
+    if (transactionIdAndroid == null) {
+      throw PlatformException(
+        code: 'PlatformError',
+        message: 'transactionIdAndroid is required for refund',
+      );
+    }
+    return requestTransactionV2Android(
+      transactionId: transactionIdAndroid,
+      originTransactionId: originTransactionId,
+      transactionType: TransactionType.refund,
+      amount: amount,
+      clientId: clientId,
+      printByPaymentApp: printByPaymentApp,
+      redirectInfo: redirectInfo,
+      clientInfo: clientInfo,
+      openGptomUI: openGptomUI,
+      preferableReceiptType: preferableReceiptType,
+    );
+  }
+
   Future closeBatch({
     String? transactionIdAndroid,
     String? clientId,
@@ -198,14 +253,13 @@ class GptomAidlPlugin {
     bool printByPaymentApp = false,
   }) async {
     if (Platform.isIOS) {
-      await GptomAidlPluginIOS.closeBatchIOS(
+      return await GptomAidlPluginIOS.closeBatchIOS(
         clientID: clientId,
         clientEmail: clientInfo?['email'],
         clientPhone: clientInfo?['phone'],
         preferableReceiptType: preferableReceiptType,
         printByPaymentApp: printByPaymentApp
       );
-      return;
     }
     if (transactionIdAndroid == null) {
       throw PlatformException(
@@ -213,7 +267,7 @@ class GptomAidlPlugin {
         message: 'transactionIdAndroid is required for closeBatch',
       );
     }
-    RequestResult res = await requestTransactionV2Android(
+    return await requestTransactionV2Android(
       transactionId: transactionIdAndroid,
       transactionType: TransactionType.closeBatch,
       redirectInfo: redirectInfo,
@@ -241,5 +295,83 @@ class GptomAidlPlugin {
   /// (z. B. maskierte Kartennummer, Betrag, Datum).
   Future<InquireResult> inquireTransactionAndroid(String transactionId) {
     return GptomAidlPluginPlatform.instance.inquireTransactionAndroid(transactionId);
+  }
+
+  // ---------------------------------------------------------------------------
+  // Login-Service (AIDL 1.29.0, nur Android)
+  // ---------------------------------------------------------------------------
+  /// Bindet den GPTom-Login-Service. Muss vor [loginGpTom], [logoutGpTom]
+  /// und [changeGpTomPassword] aufgerufen werden.
+  Future<bool> bindLoginService({bool isDevAndroid = false}) {
+    return GptomAidlPluginPlatform.instance.bindLoginService(isDevAndroid: isDevAndroid);
+  }
+
+  Future<void> unbindLoginService() {
+    return GptomAidlPluginPlatform.instance.unbindLoginService();
+  }
+
+  /// Meldet den Benutzer in GP tom an. Das Ergebnis kommt asynchron über
+  /// [loginStatusStream] (z. B. USER_LOGGED_IN, INVALID_CREDENTIALS, ...).
+  Future<bool> loginGpTom({
+    required String username,
+    required String password,
+    required String terminalId,
+    String? authCode,
+  }) {
+    return GptomAidlPluginPlatform.instance.loginGpTom(
+      username: username,
+      password: password,
+      terminalId: terminalId,
+      authCode: authCode,
+    );
+  }
+
+  /// Meldet den Benutzer in GP tom ab. Ergebnis über [loginStatusStream].
+  Future<bool> logoutGpTom() {
+    return GptomAidlPluginPlatform.instance.logoutGpTom();
+  }
+
+  /// Ändert das GP tom Passwort. Mit [validationOnly] = true wird das neue
+  /// Passwort nur validiert. Ergebnis über [loginStatusStream]
+  /// (PASSWORD_CHANGED, PASSWORD_CHANGE_FAILED, ...).
+  Future<bool> changeGpTomPassword({
+    required String currentPassword,
+    required String newPassword,
+    String? authCode,
+    bool validationOnly = false,
+  }) {
+    return GptomAidlPluginPlatform.instance.changeGpTomPassword(
+      currentPassword: currentPassword,
+      newPassword: newPassword,
+      authCode: authCode,
+      validationOnly: validationOnly,
+    );
+  }
+
+  /// Status-Updates aus der GP tom App (Login, Logout, Passwort-Änderung).
+  Stream<GpTomLoginEvent> get loginStatusStream {
+    return GptomAidlPluginPlatform.instance.loginStatusStream;
+  }
+
+  // ---------------------------------------------------------------------------
+  // Info-Service (nur Android)
+  // ---------------------------------------------------------------------------
+  /// Bindet den GPTom-Info-Service. Muss vor [getGpTomInfo] aufgerufen werden.
+  Future<bool> bindInfoService({bool isDevAndroid = false}) {
+    return GptomAidlPluginPlatform.instance.bindInfoService(isDevAndroid: isDevAndroid);
+  }
+
+  Future<void> unbindInfoService() {
+    return GptomAidlPluginPlatform.instance.unbindInfoService();
+  }
+
+  /// Liefert Infos über die GP tom App (Version, Login-Status, TID, MID, ...).
+  Future<GpTomInfo?> getGpTomInfo() {
+    return GptomAidlPluginPlatform.instance.getGpTomInfo();
+  }
+
+  /// Push-Updates der GP tom App-Infos (z. B. nach Login/Logout).
+  Stream<GpTomInfo> get gpTomInfoStream {
+    return GptomAidlPluginPlatform.instance.gpTomInfoStream;
   }
 }

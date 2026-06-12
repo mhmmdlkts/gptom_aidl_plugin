@@ -108,7 +108,9 @@ class InquireResult {
 
       // transactionID kann "..." sein oder leer.
       // Wir machen sie hier required, also fallback, falls gar nicht existiert.
-      transactionId: map['trasanctionID'] as String,
+      // Achtung: "trasanctionID" ist kein Tippfehler von uns, sondern der
+      // tatsächliche Key in der GPTom-API-Antwort.
+      transactionId: (map['trasanctionID'] as String?) ?? '',
       approvedCode: map['approvedCode'] as String?,
       merchantID: map['merchantID'] as String?,
       terminalID: map['terminalID'] as String?,

@@ -74,9 +74,10 @@ class RequestResult {
       result: map['result'] as int?,
       amsID: map['amsID'] as String?,
       transactionId: map['transactionID'] as String?,
-      amount: (((map['amount'] as int?)??0)/100).toDouble(),
-      tipAmount: (((map['tipAmount'] as int?)??0)/100).toDouble(),
-      totalAmount: (((map['totalAmount'] as int?)??0)/100).toDouble(),
+      // num statt int: GPTom kann Beträge auch als 1111.0 liefern
+      amount: (((map['amount'] as num?)??0)/100).toDouble(),
+      tipAmount: (((map['tipAmount'] as num?)??0)/100).toDouble(),
+      totalAmount: (((map['totalAmount'] as num?)??0)/100).toDouble(),
       approvedCode: map['approvedCode'] as String?,
       batchNumber: map['batchNumber'] as String?,
       cardNumber: map['cardNumber'] as String?,
@@ -95,7 +96,9 @@ class RequestResult {
       pinOk: map['pinOk'] as bool?,
       printByPaymentApp: map['printByPaymentApp'] as bool?,
       responseMessage: map['responseMessage'] as String?,
-      transactionType: map['transactionType'].runtimeType != int?null:TransactionType.values.firstWhere((e) => e.index == map['transactionType']),
+      // Über die GPTom-ID mappen (1=SALE, 2=VOID, ...), nicht über den
+      // Enum-Index – der ist verschoben (sell.index==0) und kennt 4 nicht.
+      transactionType: TransactionType.fromId(map['transactionType']),
       sequenceNumber: map['sequenceNumber'] as String?,
       terminalID: map['terminalID'] as String?,
       // Fehler-Objekt:
@@ -115,7 +118,7 @@ class RequestResult {
     if (decoded is Map<String, dynamic>) {
       return RequestResult.fromMap(decoded);
     } else {
-      throw RequestResult.exception();
+      return RequestResult.exception();
     }
   }
 

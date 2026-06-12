@@ -1,6 +1,6 @@
 name: gptom_aidl_plugin
 description: "A new Kreiseck plugin project."
-version: 0.0.1
+version: 0.0.2
 homepage:
 
 environment:

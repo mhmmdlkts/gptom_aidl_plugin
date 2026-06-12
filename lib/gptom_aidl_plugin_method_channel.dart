@@ -1,8 +1,10 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 import 'package:flutter/services.dart';
-import 'package:gptom_aidl_plugin/gptom_aidl_plugin_ios.dart';
+import 'package:gptom_aidl_plugin/models/gptom_info.dart';
 import 'package:gptom_aidl_plugin/models/inquire_result.dart';
+import 'package:gptom_aidl_plugin/models/login_status.dart';
 import 'package:gptom_aidl_plugin/models/request_result.dart';
 import 'package:url_launcher/url_launcher.dart';
 
@@ -11,8 +13,47 @@ import 'models/register_result.dart';
 import 'models/state_result.dart';
 
 class MethodChannelGptomAidlPlugin extends GptomAidlPluginPlatform {
+  MethodChannelGptomAidlPlugin() {
+    methodChannel.setMethodCallHandler(_handleNativeCall);
+  }
+
   final methodChannel = const MethodChannel('gptom_aidl_plugin');
-  final GptomAidlPluginIOS gptomAidlPluginIOS = GptomAidlPluginIOS();
+
+  final StreamController<GpTomLoginEvent> _loginStatusController =
+      StreamController<GpTomLoginEvent>.broadcast();
+  final StreamController<GpTomInfo> _gpTomInfoController =
+      StreamController<GpTomInfo>.broadcast();
+
+  /// Verarbeitet Pushes aus dem nativen Code (AIDL-Callbacks).
+  Future<dynamic> _handleNativeCall(MethodCall call) async {
+    switch (call.method) {
+      case 'onLoginStatusChanged':
+        final args = Map<String, dynamic>.from(call.arguments as Map);
+        final rawStatus = args['status'] as String?;
+        _loginStatusController.add(GpTomLoginEvent(
+          status: GpTomLoginStatus.fromKey(rawStatus),
+          rawStatus: rawStatus,
+          message: args['message'] as String?,
+        ));
+        break;
+      case 'onGpTomInfoChanged':
+        final raw = call.arguments;
+        if (raw is String) {
+          _gpTomInfoController.add(GpTomInfo.fromJson(raw));
+        }
+        break;
+    }
+    return null;
+  }
+
+  void _requireAndroid(String method) {
+    if (!Platform.isAndroid) {
+      throw PlatformException(
+        code: 'PlatformError',
+        message: '$method is only supported on Android',
+      );
+    }
+  }
 
   @override
   Future<bool> existGpTomApp({bool isDevAndroid = false}) async {
@@ -21,30 +62,31 @@ class MethodChannelGptomAidlPlugin extends GptomAidlPluginPlatform {
       return await canLaunchUrl(uri);
     }
     return await methodChannel.invokeMethod<bool>('existGpTomApp', {
-      'isDev': isDevAndroid, // oder false
+      'isDev': isDevAndroid,
     }) ?? false;
   }
 
   @override
   Future<bool> bindService({bool isDevAndroid = false}) async {
-    print('bbb: ${Platform.isIOS}');
     if (Platform.isIOS) {
       return true;
     }
-    print('ccc');
     return await methodChannel.invokeMethod<bool>('bindService', {
-      'isDev': isDevAndroid, // oder false
+      'isDev': isDevAndroid,
     }) ?? false;
   }
 
   @override
-  Future<RegisterResult> registerTransactionV2Android(Map<String, dynamic> params) async {
+  Future<void> unbindService() async {
     if (!Platform.isAndroid) {
-      throw PlatformException(
-        code: 'PlatformError',
-        message: 'registerTransactionV2Android is not supported on iOS',
-      );
+      return;
     }
+    await methodChannel.invokeMethod('unbindService');
+  }
+
+  @override
+  Future<RegisterResult> registerTransactionV2Android(Map<String, dynamic> params) async {
+    _requireAndroid('registerTransactionV2Android');
     final jsonParams = jsonEncode(params);
     final String? result = await methodChannel.invokeMethod<String>('registerTransactionV2', {
       'registerJson': jsonParams,
@@ -59,12 +101,7 @@ class MethodChannelGptomAidlPlugin extends GptomAidlPluginPlatform {
 
   @override
   Future<RequestResult> requestTransactionV2Android(Map<String, dynamic> params) async {
-    if (!Platform.isAndroid) {
-      throw PlatformException(
-        code: 'PlatformError',
-        message: 'requestTransactionV2Android is not supported on iOS',
-      );
-    }
+    _requireAndroid('requestTransactionV2Android');
     final jsonParams = jsonEncode(params);
     final String? result = await methodChannel.invokeMethod<String>('requestTransactionV2', {
       'requestJson': jsonParams,
@@ -77,12 +114,7 @@ class MethodChannelGptomAidlPlugin extends GptomAidlPluginPlatform {
 
   @override
   Future<StateResult> stateRequestAndroid(String transactionId) async {
-    if (!Platform.isAndroid) {
-      throw PlatformException(
-        code: 'PlatformError',
-        message: 'stateRequestAndroid is not supported on iOS',
-      );
-    }
+    _requireAndroid('stateRequestAndroid');
     final dynamic raw = await methodChannel.invokeMethod<String>('stateRequest', {
       'transactionId': transactionId,
     });
@@ -94,12 +126,7 @@ class MethodChannelGptomAidlPlugin extends GptomAidlPluginPlatform {
 
   @override
   Future<InquireResult> inquireTransactionAndroid(String transactionId) async {
-    if (!Platform.isAndroid) {
-      throw PlatformException(
-        code: 'PlatformError',
-        message: 'inquireTransactionAndroid is not supported on iOS',
-      );
-    }
+    _requireAndroid('inquireTransactionAndroid');
     final dynamic raw = await methodChannel.invokeMethod<String>('inquireTransaction', {
       'transactionId': transactionId,
     });
@@ -119,6 +146,98 @@ class MethodChannelGptomAidlPlugin extends GptomAidlPluginPlatform {
       throw Exception('inquireTransaction: Unexpected type: $raw');
     }
   }
+
+  // ---------------------------------------------------------------------------
+  // Login-Service (AIDL 1.29.0)
+  // ---------------------------------------------------------------------------
+  @override
+  Future<bool> bindLoginService({bool isDevAndroid = false}) async {
+    _requireAndroid('bindLoginService');
+    return await methodChannel.invokeMethod<bool>('bindLoginService', {
+      'isDev': isDevAndroid,
+    }) ?? false;
+  }
+
+  @override
+  Future<void> unbindLoginService() async {
+    if (!Platform.isAndroid) {
+      return;
+    }
+    await methodChannel.invokeMethod('unbindLoginService');
+  }
+
+  @override
+  Future<bool> loginGpTom({
+    required String username,
+    required String password,
+    required String terminalId,
+    String? authCode,
+  }) async {
+    _requireAndroid('loginGpTom');
+    return await methodChannel.invokeMethod<bool>('gpTomLogin', {
+      'username': username,
+      'password': password,
+      'terminalId': terminalId,
+      'authCode': authCode,
+    }) ?? false;
+  }
+
+  @override
+  Future<bool> logoutGpTom() async {
+    _requireAndroid('logoutGpTom');
+    return await methodChannel.invokeMethod<bool>('gpTomLogout') ?? false;
+  }
+
+  @override
+  Future<bool> changeGpTomPassword({
+    required String currentPassword,
+    required String newPassword,
+    String? authCode,
+    bool validationOnly = false,
+  }) async {
+    _requireAndroid('changeGpTomPassword');
+    return await methodChannel.invokeMethod<bool>('gpTomChangePassword', {
+      'oldPass': currentPassword,
+      'newPass': newPassword,
+      'authCode': authCode,
+      'validationOnly': validationOnly,
+    }) ?? false;
+  }
+
+  @override
+  Stream<GpTomLoginEvent> get loginStatusStream => _loginStatusController.stream;
+
+  // ---------------------------------------------------------------------------
+  // Info-Service
+  // ---------------------------------------------------------------------------
+  @override
+  Future<bool> bindInfoService({bool isDevAndroid = false}) async {
+    _requireAndroid('bindInfoService');
+    return await methodChannel.invokeMethod<bool>('bindInfoService', {
+      'isDev': isDevAndroid,
+    }) ?? false;
+  }
+
+  @override
+  Future<void> unbindInfoService() async {
+    if (!Platform.isAndroid) {
+      return;
+    }
+    await methodChannel.invokeMethod('unbindInfoService');
+  }
+
+  @override
+  Future<GpTomInfo?> getGpTomInfo() async {
+    _requireAndroid('getGpTomInfo');
+    final String? raw = await methodChannel.invokeMethod<String>('getGpTomInfo');
+    if (raw == null) {
+      return null;
+    }
+    return GpTomInfo.fromJson(raw);
+  }
+
+  @override
+  Stream<GpTomInfo> get gpTomInfoStream => _gpTomInfoController.stream;
 
   @override
   Future<bool> cancelTransactionIOS() async {

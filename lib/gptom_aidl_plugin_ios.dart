@@ -15,16 +15,20 @@ class GptomAidlPluginIOS {
   static final StreamController<Uri> gptomRedirectStream = StreamController<Uri>.broadcast();
   static late final AppLinks _appLinks;
   static bool _isListening = false;
+  static String _expectedScheme = '';
   static String _redirectUrl = 'xxx://redirect';
 
   static void listenForGptomRedirectsIOS(String uriScheme) {
+    // Scheme als Feld halten, damit der Filter auch bei einem späteren
+    // Aufruf mit anderem Scheme zur Redirect-URL passt.
+    _expectedScheme = uriScheme;
     _redirectUrl = '$uriScheme://redirect';
     if (_isListening) return;
 
     try {
       _appLinks = AppLinks();
       _appLinks.uriLinkStream.listen((Uri uri) {
-        if (uri.scheme == uriScheme) {
+        if (uri.scheme == _expectedScheme) {
           gptomRedirectStream.add(uri);
         }
       }, onError: (e) {
@@ -65,9 +69,14 @@ class GptomAidlPluginIOS {
       },
     );
 
+    // Vor dem Öffnen abonnieren, damit kein Redirect verpasst wird.
+    final redirectFuture =
+        gptomRedirectStream.stream.first.timeout(Duration(seconds: 15));
+
     final success = await launchUrl(uri);
 
     if (!success) {
+      redirectFuture.ignore();
       throw PlatformException(
         code: 'PlatformError',
         message: 'Konnte GPTom nicht öffnen',
@@ -75,10 +84,14 @@ class GptomAidlPluginIOS {
     }
 
     try {
-      final redirectedUri = await gptomRedirectStream.stream.first.timeout(Duration(seconds: 15));
+      final redirectedUri = await redirectFuture;
 
-      final query = redirectedUri.queryParameters as Map<String, dynamic>;
-      return Batch.fromQuery(query['batch']);
+      final query = redirectedUri.queryParameters;
+      final batchRaw = query['batch'];
+      if (batchRaw == null) {
+        throw Exception('Kein Batch im Redirect enthalten');
+      }
+      return Batch.fromQuery(batchRaw);
     } catch (e) {
       throw Exception(
         'Kein Redirect erhalten oder Timeout, error: $e',
@@ -106,7 +119,9 @@ class GptomAidlPluginIOS {
       host: 'transaction',
       path: 'create',
       queryParameters: {
-        'amount': (amount * 100).toInt().toString(),
+        // round() statt toInt(): toInt() schneidet ab und macht aus
+        // 4.35 * 100 = 434.99999… sonst 434 Cent.
+        'amount': (amount * 100).round().toString(),
         if (clientID != null) 'clientID': clientID,
         if (originReferenceNum != null) 'originReferenceNum': originReferenceNum,
         'redirectUrl': _redirectUrl,
@@ -114,20 +129,25 @@ class GptomAidlPluginIOS {
         if (preferableReceiptType != null) 'preferableReceiptType': preferableReceiptType.key,
         if (clientPhone != null) 'clientPhone': clientPhone,
         if (clientEmail != null) 'clientEmail': clientEmail,
-        if (tipAmount != null) 'tipAmount': (tipAmount * 100).toInt().toString(),
+        if (tipAmount != null) 'tipAmount': (tipAmount * 100).round().toString(),
         'tipCollect': tipCollect.toString(),
         'transactionType': transactionMethode.text,
       },
     );
 
+    // Vor dem Öffnen abonnieren, damit kein Redirect verpasst wird.
+    final redirectFuture =
+        gptomRedirectStream.stream.first.timeout(Duration(seconds: 60));
+
     final success = await launchUrl(uri);
 
     if (!success) {
+      redirectFuture.ignore();
       return RequestResult(result: -1002, responseMessage: 'Konnte GPTom nicht öffnen');
     }
 
     try {
-      final redirectedUri = await gptomRedirectStream.stream.first.timeout(Duration(seconds: 60));
+      final redirectedUri = await redirectFuture;
 
       final query = redirectedUri.queryParameters;
       final receiptRaw = query['receipt'];
@@ -137,7 +157,6 @@ class GptomAidlPluginIOS {
       }
 
       final receipt = jsonDecode(receiptRaw);
-      print(receipt);
 
       String cardNumber = receipt['cardNumber'] ?? '';
       if (cardNumber.length == 4) {
@@ -208,14 +227,19 @@ class GptomAidlPluginIOS {
       },
     );
 
+    // Vor dem Öffnen abonnieren, damit kein Redirect verpasst wird.
+    final redirectFuture =
+        gptomRedirectStream.stream.first.timeout(Duration(seconds: 60));
+
     final success = await launchUrl(uri);
 
     if (!success) {
+      redirectFuture.ignore();
       return RequestResult(result: -1002, responseMessage: 'Konnte GPTom nicht öffnen');
     }
 
     try {
-      final redirectedUri = await gptomRedirectStream.stream.first.timeout(Duration(seconds: 60));
+      final redirectedUri = await redirectFuture;
       final query = redirectedUri.queryParameters;
       final receiptRaw = query['receipt'];
 

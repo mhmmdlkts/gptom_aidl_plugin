@@ -48,7 +48,6 @@ class StateResult {
   });
 
   factory StateResult.fromMap(Map<String, dynamic> map) {
-    print(map);
     final int resultCode = map['resultCode'] is int
         ? map['resultCode'] as int
         : int.tryParse(map['resultCode']?.toString() ?? '-1001') ?? -1001;

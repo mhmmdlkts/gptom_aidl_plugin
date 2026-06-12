@@ -1,4 +1,6 @@
+import 'package:gptom_aidl_plugin/models/gptom_info.dart';
 import 'package:gptom_aidl_plugin/models/inquire_result.dart';
+import 'package:gptom_aidl_plugin/models/login_status.dart';
 import 'package:gptom_aidl_plugin/models/request_result.dart';
 import 'package:plugin_platform_interface/plugin_platform_interface.dart';
 
@@ -29,10 +31,39 @@ abstract class GptomAidlPluginPlatform extends PlatformInterface {
 
   Future<bool> existGpTomApp({bool isDevAndroid = false});
   Future<bool> bindService({bool isDevAndroid = false});
+  Future<void> unbindService();
   Future<RegisterResult> registerTransactionV2Android(Map<String, dynamic> params);
   Future<RequestResult> requestTransactionV2Android(Map<String, dynamic> params);
   Future<StateResult> stateRequestAndroid(String transactionId);
   Future<InquireResult> inquireTransactionAndroid(String transactionId);
   Future<bool> createTransactionIOS();
   Future<bool> cancelTransactionIOS();
+
+  // --- Login-Service (AIDL 1.29.0, nur Android) ---
+  Future<bool> bindLoginService({bool isDevAndroid = false});
+  Future<void> unbindLoginService();
+  Future<bool> loginGpTom({
+    required String username,
+    required String password,
+    required String terminalId,
+    String? authCode,
+  });
+  Future<bool> logoutGpTom();
+  Future<bool> changeGpTomPassword({
+    required String currentPassword,
+    required String newPassword,
+    String? authCode,
+    bool validationOnly = false,
+  });
+
+  /// Status-Updates aus der GP tom App (Ergebnis von login/logout/changePassword).
+  Stream<GpTomLoginEvent> get loginStatusStream;
+
+  // --- Info-Service (nur Android) ---
+  Future<bool> bindInfoService({bool isDevAndroid = false});
+  Future<void> unbindInfoService();
+  Future<GpTomInfo?> getGpTomInfo();
+
+  /// Push-Updates der GP tom App-Infos.
+  Stream<GpTomInfo> get gpTomInfoStream;
 }
