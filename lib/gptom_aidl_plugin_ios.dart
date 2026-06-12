@@ -99,15 +99,23 @@ class GptomAidlPluginIOS {
     }
   }
 
+  /// Receipt-Beträge liefert GPTom als Euro-Dezimalwerte (z. B. "4.35").
+  static int? _centsFromReceipt(dynamic value) {
+    if (value == null) return null;
+    final parsed = double.tryParse(value.toString());
+    if (parsed == null) return null;
+    return (parsed * 100).round();
+  }
+
   static Future<RequestResult> createTransactionIOS({
-    required double amount,
+    required int amountCents,
     String? originReferenceNum,
     String? clientID,
     bool printByPaymentApp = true,
     PreferableReceiptType? preferableReceiptType,
     String? clientPhone,
     String? clientEmail,
-    double? tipAmount,
+    int? tipAmountCents,
     bool tipCollect = false,
     required TransactionMethode transactionMethode,
   }) async {
@@ -119,9 +127,8 @@ class GptomAidlPluginIOS {
       host: 'transaction',
       path: 'create',
       queryParameters: {
-        // round() statt toInt(): toInt() schneidet ab und macht aus
-        // 4.35 * 100 = 434.99999… sonst 434 Cent.
-        'amount': (amount * 100).round().toString(),
+        // GPTom erwartet den Betrag in Cent (*100-Format)
+        'amount': amountCents.toString(),
         if (clientID != null) 'clientID': clientID,
         if (originReferenceNum != null) 'originReferenceNum': originReferenceNum,
         'redirectUrl': _redirectUrl,
@@ -129,7 +136,7 @@ class GptomAidlPluginIOS {
         if (preferableReceiptType != null) 'preferableReceiptType': preferableReceiptType.key,
         if (clientPhone != null) 'clientPhone': clientPhone,
         if (clientEmail != null) 'clientEmail': clientEmail,
-        if (tipAmount != null) 'tipAmount': (tipAmount * 100).round().toString(),
+        if (tipAmountCents != null) 'tipAmount': tipAmountCents.toString(),
         'tipCollect': tipCollect.toString(),
         'transactionType': transactionMethode.text,
       },
@@ -173,9 +180,9 @@ class GptomAidlPluginIOS {
       return RequestResult(
         result: receipt['result'],
         transactionId: receipt['amsID'],
-        amount: double.tryParse(receipt['amount']??''),
-        tipAmount: double.tryParse(receipt['tipAmount']??''),
-        totalAmount: double.tryParse(receipt['totalAmount']??''),
+        amountCents: _centsFromReceipt(receipt['amount']),
+        tipAmountCents: _centsFromReceipt(receipt['tipAmount']),
+        totalAmountCents: _centsFromReceipt(receipt['totalAmount']),
         batchNumber: receipt['batchNumber'],
         approvedCode: receipt['authorizationCode'],
         emvAppLable: receipt['emvAppLabel'],
@@ -263,9 +270,9 @@ class GptomAidlPluginIOS {
       return RequestResult(
         result: receipt['result'],
         transactionId: receipt['transactionID'],
-        amount: double.tryParse(receipt['amount'] ?? ''),
-        totalAmount: double.tryParse(receipt['totalAmount'] ?? ''),
-        tipAmount: double.tryParse(receipt['tipAmount'] ?? ''),
+        amountCents: _centsFromReceipt(receipt['amount']),
+        totalAmountCents: _centsFromReceipt(receipt['totalAmount']),
+        tipAmountCents: _centsFromReceipt(receipt['tipAmount']),
         batchNumber: receipt['batchNumber'],
         approvedCode: receipt['authorizationCode'],
         emvAppLable: receipt['emvAppLabel'],

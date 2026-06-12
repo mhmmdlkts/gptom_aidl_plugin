@@ -30,9 +30,11 @@ void main() {
 
       expect(result.result, 0);
       expect(result.transactionId, 'tx-1');
-      expect(result.amount, 11.11);
-      expect(result.tipAmount, 1.13);
-      expect(result.totalAmount, 12.24);
+      expect(result.amountCents, 1111);
+      expect(result.tipAmountCents, 113);
+      expect(result.totalAmountCents, 1224);
+      expect(result.amountEuro, 11.11);
+      expect(result.tipAmountEuro, 1.13);
       expect(result.transactionType, TransactionType.sell);
       expect(result.approvedCode, '529625');
       expect(result.currencyCode, '978');
@@ -77,7 +79,7 @@ void main() {
 
     test('verträgt Beträge als double (1111.0)', () {
       final result = RequestResult.fromJson('{"result":0,"amount":1111.0}');
-      expect(result.amount, 11.11);
+      expect(result.amountCents, 1111);
     });
 
     test('parst das Fehler-Objekt', () {

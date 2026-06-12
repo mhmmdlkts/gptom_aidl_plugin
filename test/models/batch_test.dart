@@ -37,20 +37,29 @@ Map<String, dynamic> _batchMap() => {
 
 void main() {
   group('Batch', () {
-    test('fromJson parst alle Felder', () {
+    test('fromJson parst alle Felder und rechnet Euro in Cent um', () {
       final batch = Batch.fromJson(_batchMap());
 
       expect(batch.saleCount, 5);
       expect(batch.voidCount, 1);
-      expect(batch.saleAmount, 100.5);
-      expect(batch.totalAmount, 95.5);
+      expect(batch.saleAmountCents, 10050);
+      expect(batch.totalAmountCents, 9550);
+      expect(batch.saleAmountEuro, 100.5);
       expect(batch.currency, 'EUR');
       expect(batch.amsId, 'ams-1');
       expect(batch.isSuccess, isTrue);
       expect(batch.date, DateTime.parse('2026-05-19T20:00:00.000Z'));
-      expect(batch.cardBatch.saleAmount, 80.0);
-      expect(batch.cashBatch.saleAmount, 20.5);
+      expect(batch.cardBatch.saleAmountCents, 8000);
+      expect(batch.cashBatch.saleAmountCents, 2050);
       expect(batch.cardBatch.closeBatchNumber, '42');
+    });
+
+    test('toJson/fromJson sind verlustfrei (Euro-Format auf dem Draht)', () {
+      final batch = Batch.fromJson(_batchMap());
+      final roundTripped = Batch.fromJson(jsonDecode(jsonEncode(batch.toJson())));
+      expect(roundTripped.saleAmountCents, batch.saleAmountCents);
+      expect(roundTripped.totalAmountCents, batch.totalAmountCents);
+      expect(roundTripped.cardBatch.saleAmountCents, batch.cardBatch.saleAmountCents);
     });
 
     test('fromQuery parst einen JSON-String', () {

@@ -74,8 +74,8 @@ class GptomAidlPlugin {
   ///
   /// - [transactionId] muss von registerTransactionV2 kommen
   /// - [transactionType]: 1=SALE, 2=VOID, 3=REFUND, 4=CLOSE_BATCH, ...
-  /// - [amount]: in EUR (wird intern in Cent umgerechnet, 11.11 => 1111)
-  /// - [tipAmount] (optional)
+  /// - [amountCents]: in Cent (1111 => 11,11 EUR), wie es GPTom erwartet
+  /// - [tipAmountCents] (optional)
   /// - [originTransactionId] (bei VOID/REFUND)
   /// - [cancelMode]: 1= letzte Transaktion, 2=ältere Transaktionen (ggf. optional)
   /// - [clientId]: falls nötig
@@ -83,8 +83,8 @@ class GptomAidlPlugin {
   Future<RequestResult> requestTransactionV2Android({
     required String transactionId,
     required TransactionType transactionType,
-    double? amount,
-    double? tipAmount,
+    int? amountCents,
+    int? tipAmountCents,
     String? originTransactionId,
     CancelMode? cancelMode,
     String? clientId,
@@ -98,11 +98,9 @@ class GptomAidlPlugin {
     final params = <String, dynamic>{
       'transactionID': transactionId,
       'transactionType': transactionType.id,
-      // round() statt toInt(): toInt() schneidet ab und macht aus
-      // 4.35 * 100 = 434.99999… sonst 434 Cent.
-      if (amount != null) 'amount': (amount * 100).round(),
+      if (amountCents != null) 'amount': amountCents,
       'openGptomUI': openGptomUI,
-      if (tipAmount != null) 'tipAmount': (tipAmount * 100).round(),
+      if (tipAmountCents != null) 'tipAmount': tipAmountCents,
       if (originTransactionId != null) 'originTransactionID': originTransactionId,
       if (cancelMode != null) 'cancelMode': cancelMode.id,
       if (clientId != null) 'clientID': clientId,
@@ -117,11 +115,12 @@ class GptomAidlPlugin {
   }
 
 
+  /// Verkauf. [amountCents] und [tipAmountCents] in Cent (1111 => 11,11 EUR).
   Future<RequestResult> sell({
     String? transactionIdAndroid,
-    required double amount,
+    required int amountCents,
     required TransactionMethode transactionMethode,
-    double tipAmount = 0,
+    int tipAmountCents = 0,
     String? clientId,
     bool printByPaymentApp = false,
     bool tipCollect = false,
@@ -132,10 +131,10 @@ class GptomAidlPlugin {
   }) async {
     if (Platform.isIOS) {
       return await GptomAidlPluginIOS.createTransactionIOS(
-        amount: amount,
+        amountCents: amountCents,
         transactionMethode: transactionMethode,
         tipCollect: tipCollect,
-        tipAmount: tipAmount,
+        tipAmountCents: tipAmountCents,
         printByPaymentApp: printByPaymentApp,
         clientID: clientId,
         preferableReceiptType: preferableReceiptType,
@@ -152,8 +151,8 @@ class GptomAidlPlugin {
     return requestTransactionV2Android(
       transactionId: transactionIdAndroid,
       transactionType: TransactionType.sell,
-      amount: amount,
-      tipAmount: tipAmount,
+      amountCents: amountCents,
+      tipAmountCents: tipAmountCents,
       clientId: clientId,
       printByPaymentApp: printByPaymentApp,
       tipCollect: tipCollect,
@@ -204,12 +203,12 @@ class GptomAidlPlugin {
   }
 
   /// Rückerstattung (REFUND, transactionType 3) einer abgeschlossenen
-  /// Transaktion. Nur Android – auf iOS bietet das GPTom-URL-Scheme dafür
-  /// keinen Weg.
+  /// Transaktion. [amountCents] in Cent. Nur Android – auf iOS bietet das
+  /// GPTom-URL-Scheme dafür keinen Weg.
   Future<RequestResult> refund({
     String? transactionIdAndroid,
     required String originTransactionId,
-    required double amount,
+    required int amountCents,
     String? clientId,
     bool printByPaymentApp = false,
     Map<String, dynamic>? redirectInfo,
@@ -233,7 +232,7 @@ class GptomAidlPlugin {
       transactionId: transactionIdAndroid,
       originTransactionId: originTransactionId,
       transactionType: TransactionType.refund,
-      amount: amount,
+      amountCents: amountCents,
       clientId: clientId,
       printByPaymentApp: printByPaymentApp,
       redirectInfo: redirectInfo,

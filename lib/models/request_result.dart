@@ -11,9 +11,9 @@ class RequestResult {
   final int? result;          // z. B. 0 = success, -1 = fail, -6 = Invalid params ...
   final String? amsID;
   final String? transactionId;
-  final double? amount;          // *100 Format (1111 => 11.11)
-  final double? tipAmount;          // *100 Format (1111 => 11.11)
-  final double? totalAmount;          // *100 Format (1111 => 11.11)
+  final int? amountCents;       // in Cent (1111 => 11,11 EUR)
+  final int? tipAmountCents;    // in Cent
+  final int? totalAmountCents;  // in Cent
   final String? approvedCode; // bei Erfolg
   final String? batchNumber;
   final String? cardNumber;   // maskiert z. B. "**** **** **** 7866"
@@ -39,13 +39,18 @@ class RequestResult {
 
   // evtl. originTransactionID, tipCollect, etc., falls sie kommen
 
+  /// Komfort-Getter für Anzeigen in Euro.
+  double? get amountEuro => amountCents == null ? null : amountCents! / 100;
+  double? get tipAmountEuro => tipAmountCents == null ? null : tipAmountCents! / 100;
+  double? get totalAmountEuro => totalAmountCents == null ? null : totalAmountCents! / 100;
+
   RequestResult({
     this.result,
     this.amsID,
     this.transactionId,
-    this.amount,
-    this.tipAmount,
-    this.totalAmount,
+    this.amountCents,
+    this.tipAmountCents,
+    this.totalAmountCents,
     this.approvedCode,
     this.batchNumber,
     this.cardNumber,
@@ -74,10 +79,10 @@ class RequestResult {
       result: map['result'] as int?,
       amsID: map['amsID'] as String?,
       transactionId: map['transactionID'] as String?,
-      // num statt int: GPTom kann Beträge auch als 1111.0 liefern
-      amount: (((map['amount'] as num?)??0)/100).toDouble(),
-      tipAmount: (((map['tipAmount'] as num?)??0)/100).toDouble(),
-      totalAmount: (((map['totalAmount'] as num?)??0)/100).toDouble(),
+      // GPTom liefert Cent-Integers (ggf. als 1111.0), wir bleiben in Cent
+      amountCents: ((map['amount'] as num?) ?? 0).round(),
+      tipAmountCents: ((map['tipAmount'] as num?) ?? 0).round(),
+      totalAmountCents: ((map['totalAmount'] as num?) ?? 0).round(),
       approvedCode: map['approvedCode'] as String?,
       batchNumber: map['batchNumber'] as String?,
       cardNumber: map['cardNumber'] as String?,
@@ -128,7 +133,7 @@ class RequestResult {
         'result=$result, '
         'amsID=$amsID, '
         'transactionId=$transactionId, '
-        'amount=$amount, '
+        'amountCents=$amountCents, '
         'approvedCode=$approvedCode, '
         'responseMessage=$responseMessage, '
         'error=$error'
@@ -142,9 +147,10 @@ class RequestResult {
       'approvedCode': approvedCode,
       'merchantID': merchantID,
       'terminalID': terminalID,
-      'amount': amount,
-      'tipAmount': tipAmount,
-      'totalAmount': totalAmount,
+      // Cent-Format, wie es auch GPTom liefert
+      'amount': amountCents,
+      'tipAmount': tipAmountCents,
+      'totalAmount': totalAmountCents,
       'currencyCode': currencyCode,
       'cardNumber': cardNumber,
       'cardDataEntry': cardDataEntry,

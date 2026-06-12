@@ -1,3 +1,18 @@
+## 0.1.0
+
+* **Breaking:** Alle Geldbeträge in der API sind jetzt `int` in Cent statt
+  `double` in Euro – durchgängig ohne Fließkomma-Mathematik:
+  * Eingaben: `sell(amountCents:)`, `refund(amountCents:)`,
+    `requestTransactionV2Android(amountCents:, tipAmountCents:)`,
+    `createTransactionIOS(amountCents:, tipAmountCents:)`.
+  * Ergebnisse: `RequestResult.amountCents/tipAmountCents/totalAmountCents`,
+    `InquireResult.amountCents/tipAmountCents/totalAmountCents` (neu),
+    `Batch`/`SubBatch` mit `...AmountCents`.
+  * Für Anzeigen gibt es `...Euro`-Getter (z. B. `amountEuro`).
+* `InquireResult`-Betragsparsing vereinheitlicht: GPTom liefert dort
+  Cent-Strings ("1111"), die jetzt konsistent als Cent interpretiert werden
+  (vorher wurden numerische Werte ungeteilt durchgereicht).
+
 ## 0.0.2
 
 * GPTom App2App AIDL-Bibliothek auf 1.29.0 aktualisiert (vorher 1.24.0).

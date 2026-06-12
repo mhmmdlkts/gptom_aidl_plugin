@@ -105,45 +105,37 @@ void main() {
     plugin = GptomAidlPlugin();
   });
 
-  group('Betragsumrechnung (EUR -> Cent)', () {
-    test('rundet korrekt statt abzuschneiden', () async {
-      // 4.35 * 100 ist als double 434.99999…, toInt() hätte 434 ergeben.
+  group('Cent-Beträge', () {
+    test('werden unverändert als int durchgereicht (keine Float-Mathematik)', () async {
       await plugin.sell(
         transactionIdAndroid: 'tx-1',
-        amount: 4.35,
+        amountCents: 435,
         transactionMethode: TransactionMethode.card,
       );
       expect(fake.lastRequestParams!['amount'], 435);
+      expect(fake.lastRequestParams!['amount'], isA<int>());
     });
 
-    test('weitere kritische Beträge', () async {
-      final cases = {
-        8.20: 820,
-        1.13: 113,
-        2.55: 255,
-        11.11: 1111,
-        0.07: 7,
-        29.30: 2930,
-      };
-      for (final entry in cases.entries) {
+    test('weitere Beträge bleiben exakt', () async {
+      for (final cents in [820, 113, 255, 1111, 7, 2930]) {
         await plugin.requestTransactionV2Android(
           transactionId: 'tx-1',
           transactionType: TransactionType.sell,
-          amount: entry.key,
+          amountCents: cents,
         );
-        expect(fake.lastRequestParams!['amount'], entry.value,
-            reason: '${entry.key} EUR muss ${entry.value} Cent ergeben');
+        expect(fake.lastRequestParams!['amount'], cents);
       }
     });
 
-    test('tipAmount wird ebenfalls gerundet', () async {
+    test('tipAmountCents wird ebenfalls durchgereicht', () async {
       await plugin.sell(
         transactionIdAndroid: 'tx-1',
-        amount: 10.00,
-        tipAmount: 1.13,
+        amountCents: 1000,
+        tipAmountCents: 113,
         transactionMethode: TransactionMethode.card,
       );
       expect(fake.lastRequestParams!['tipAmount'], 113);
+      expect(fake.lastRequestParams!['tipAmount'], isA<int>());
     });
   });
 
@@ -151,7 +143,7 @@ void main() {
     test('baut die Request-Parameter korrekt', () async {
       await plugin.sell(
         transactionIdAndroid: 'tx-1',
-        amount: 11.11,
+        amountCents: 1111,
         transactionMethode: TransactionMethode.card,
         clientId: 'client-1',
         printByPaymentApp: true,
@@ -173,7 +165,7 @@ void main() {
     test('wirft ohne transactionIdAndroid', () async {
       expect(
         () => plugin.sell(
-          amount: 1.0,
+          amountCents: 100,
           transactionMethode: TransactionMethode.card,
         ),
         throwsA(isA<PlatformException>()),
@@ -211,7 +203,7 @@ void main() {
       await plugin.refund(
         transactionIdAndroid: 'tx-3',
         originTransactionId: 'orig-2',
-        amount: 5.25,
+        amountCents: 525,
       );
       final params = fake.lastRequestParams!;
       expect(params['transactionType'], TransactionType.refund.id);
@@ -224,7 +216,7 @@ void main() {
       expect(
         () => plugin.refund(
           originTransactionId: 'orig-2',
-          amount: 5.25,
+          amountCents: 525,
         ),
         throwsA(isA<PlatformException>()),
       );

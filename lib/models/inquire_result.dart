@@ -20,11 +20,14 @@ class InquireResult {
   /// terminalID: z. B. "11263520"
   final String? terminalID;
 
-  /// amount = *100 Format (z. B. 1111 => 11,11)
-  final double amount;
+  /// amount in Cent (z. B. 1111 => 11,11 EUR)
+  final int amountCents;
 
-  /// tipAmount = *100 Format
-  final double tipAmount;
+  /// tipAmount in Cent
+  final int tipAmountCents;
+
+  /// totalAmount in Cent (liefert GPTom erst ab neueren Versionen, sonst null)
+  final int? totalAmountCents;
 
   /// currencyCode: z. B. EUR
   final String? currencyCode;
@@ -71,11 +74,18 @@ class InquireResult {
   /// Fehler-Objekt, falls result != 0
   final InquireErrorInfo? error;
 
+  /// Komfort-Getter für Anzeigen in Euro.
+  double get amountEuro => amountCents / 100;
+  double get tipAmountEuro => tipAmountCents / 100;
+  double? get totalAmountEuro =>
+      totalAmountCents == null ? null : totalAmountCents! / 100;
+
   InquireResult({
     required this.result,
     required this.transactionId,
-    required this.amount,
-    required this.tipAmount,
+    required this.amountCents,
+    required this.tipAmountCents,
+    this.totalAmountCents,
     this.approvedCode,
     this.merchantID,
     this.terminalID,
@@ -114,8 +124,11 @@ class InquireResult {
       approvedCode: map['approvedCode'] as String?,
       merchantID: map['merchantID'] as String?,
       terminalID: map['terminalID'] as String?,
-      amount: map['amount'] is num ? (map['amount'] + 0.0) : int.parse((map['amount'] as String?)??'0')/100,
-      tipAmount: map['tipAmount'] is num ? (map['tipAmount'] + 0.0) : int.parse((map['tipAmount'] as String?)??'0')/100,
+      // GPTom liefert die Beträge hier als Cent-Strings ("1111"),
+      // siehe InquireResultEntity (amount/tipAmount/totalAmount: String)
+      amountCents: _parseCents(map['amount']) ?? 0,
+      tipAmountCents: _parseCents(map['tipAmount']) ?? 0,
+      totalAmountCents: _parseCents(map['totalAmount']),
       currencyCode: map['currencyCode'] as String?,
       cardNumber: map['cardNumber'] as String?,
       cardDataEntry: map['cardDataEntry'] as String?,
@@ -146,12 +159,20 @@ class InquireResult {
     );
   }
 
+  /// GPTom liefert Beträge je nach Endpunkt als Cent-String ("1111")
+  /// oder Cent-Zahl (1111 bzw. 1111.0).
+  static int? _parseCents(dynamic value) {
+    if (value == null) return null;
+    if (value is num) return value.round();
+    return int.tryParse(value.toString());
+  }
+
   factory InquireResult.exception() {
     return InquireResult(
       result: -1001,
       transactionId: '',
-      amount: 0,
-      tipAmount: 0,
+      amountCents: 0,
+      tipAmountCents: 0,
     );
   }
 
@@ -172,8 +193,10 @@ class InquireResult {
       'approvedCode': approvedCode,
       'merchantID': merchantID,
       'terminalID': terminalID,
-      'amount': amount,
-      'tipAmount': tipAmount,
+      // Cent-Format, wie es auch GPTom liefert
+      'amount': amountCents,
+      'tipAmount': tipAmountCents,
+      'totalAmount': totalAmountCents,
       'currencyCode': currencyCode,
       'cardNumber': cardNumber,
       'cardDataEntry': cardDataEntry,
