@@ -18,8 +18,8 @@ import 'models/register_result.dart';
 /// GptomAidlPlugin:
 ///   Dart-Fassade für alle relevanten GPTom/SmartConnect-Methoden.
 ///   Jede Methode nimmt die relevanten Parameter entgegen,
-///   ruft das jeweilige PlatformInterface auf,
-///   und gibt ein Future<String?> oder Future<Map<String,dynamic>?> zurück.
+///   ruft das jeweilige PlatformInterface auf und gibt das geparste
+///   Ergebnis-Modell zurück (z. B. `RequestResult`, `StateResult`).
 ///
 /// 1) registerTransaction
 /// 2) requestTransaction
@@ -95,6 +95,8 @@ class GptomAidlPlugin {
     bool openGptomUI = true,
     PreferableReceiptType? preferableReceiptType,
   }) async {
+    if (amountCents != null) _requireNonNegativeCents('amountCents', amountCents);
+    if (tipAmountCents != null) _requireNonNegativeCents('tipAmountCents', tipAmountCents);
     final params = <String, dynamic>{
       'transactionID': transactionId,
       'transactionType': transactionType.id,
@@ -107,15 +109,51 @@ class GptomAidlPlugin {
       if (printByPaymentApp != null) 'printByPaymentApp': printByPaymentApp,
       if (tipCollect != null) 'tipCollect': tipCollect,
       if (redirectInfo != null) 'redirectInfo': redirectInfo,
-      if (clientInfo != null) 'clientInfo': clientInfo,
-      if (preferableReceiptType != null) 'preferableReceiptType': preferableReceiptType.key,
+      if (clientInfo != null) 'clientInfo': normalizeClientInfo(clientInfo),
+      if (preferableReceiptType != null) 'preferableReceiptType': preferableReceiptType.aidlKey,
     };
     // Dann rufen wir das platform interface auf
     return GptomAidlPluginPlatform.instance.requestTransactionV2Android(params);
   }
 
+  static void _requirePositiveCents(String name, int value) {
+    if (value <= 0) {
+      throw ArgumentError.value(value, name, 'muss > 0 sein (Betrag in Cent)');
+    }
+  }
+
+  static void _requireNonNegativeCents(String name, int value) {
+    if (value < 0) {
+      throw ArgumentError.value(value, name, 'darf nicht negativ sein (Cent)');
+    }
+  }
+
+  /// GP tom erwartet clientInfo als {"contact":{"email":...,"phone":...}}
+  /// (ClientInfoEntity -> UserContactEntity in der AIDL-Bibliothek). Flache
+  /// Maps ({email, phone}) werden deshalb in die contact-Struktur gehoben;
+  /// eine bereits verschachtelte Map bleibt unverändert.
+  static Map<String, dynamic> normalizeClientInfo(Map<String, dynamic> clientInfo) {
+    final contact = <String, dynamic>{
+      if (clientInfo['contact'] is Map)
+        ...Map<String, dynamic>.from(clientInfo['contact'] as Map),
+      if (clientInfo['email'] != null) 'email': clientInfo['email'],
+      if (clientInfo['phone'] != null) 'phone': clientInfo['phone'],
+    };
+    final rest = Map<String, dynamic>.from(clientInfo)
+      ..remove('contact')
+      ..remove('email')
+      ..remove('phone');
+    return {
+      ...rest,
+      if (contact.isNotEmpty) 'contact': contact,
+    };
+  }
+
 
   /// Verkauf. [amountCents] und [tipAmountCents] in Cent (1111 => 11,11 EUR).
+  ///
+  /// [redirectTimeoutIOS] begrenzt auf iOS das Warten auf den Redirect aus
+  /// GP tom (Standard: 60 Sekunden).
   Future<RequestResult> sell({
     String? transactionIdAndroid,
     required int amountCents,
@@ -128,7 +166,10 @@ class GptomAidlPlugin {
     Map<String, dynamic>? redirectInfo,
     Map<String, dynamic>? clientInfo,
     PreferableReceiptType? preferableReceiptType,
+    Duration? redirectTimeoutIOS,
   }) async {
+    _requirePositiveCents('amountCents', amountCents);
+    _requireNonNegativeCents('tipAmountCents', tipAmountCents);
     if (Platform.isIOS) {
       return await GptomAidlPluginIOS.createTransactionIOS(
         amountCents: amountCents,
@@ -140,6 +181,7 @@ class GptomAidlPlugin {
         preferableReceiptType: preferableReceiptType,
         clientEmail: clientInfo?['email'],
         clientPhone: clientInfo?['phone'],
+        redirectTimeout: redirectTimeoutIOS,
       );
     }
     if (transactionIdAndroid == null) {
@@ -173,6 +215,7 @@ class GptomAidlPlugin {
     Map<String, dynamic>? clientInfo,
     bool openGptomUI = true,
     PreferableReceiptType? preferableReceiptType,
+    Duration? redirectTimeoutIOS,
   }) async {
     if (Platform.isIOS) {
       return await GptomAidlPluginIOS.cancelTransactionIOS(
@@ -181,6 +224,7 @@ class GptomAidlPlugin {
         clientPhone: clientInfo?['phone'],
         clientEmail: clientInfo?['email'],
         clientID: clientId,
+        redirectTimeout: redirectTimeoutIOS,
       );
     }
     if (transactionIdAndroid == null) {
@@ -216,6 +260,7 @@ class GptomAidlPlugin {
     bool openGptomUI = true,
     PreferableReceiptType? preferableReceiptType,
   }) async {
+    _requirePositiveCents('amountCents', amountCents);
     if (Platform.isIOS) {
       throw PlatformException(
         code: 'PlatformError',
@@ -242,7 +287,9 @@ class GptomAidlPlugin {
     );
   }
 
-  Future closeBatch({
+  /// Kassenschnitt. Liefert auf Android ein [RequestResult], auf iOS einen
+  /// [Batch] (GP tom stellt dort nur die Batch-Daten im Redirect bereit).
+  Future<Object?> closeBatch({
     String? transactionIdAndroid,
     String? clientId,
     Map<String, dynamic>? redirectInfo,
@@ -250,6 +297,7 @@ class GptomAidlPlugin {
     bool openGptomUI = true,
     PreferableReceiptType? preferableReceiptType,
     bool printByPaymentApp = false,
+    Duration? redirectTimeoutIOS,
   }) async {
     if (Platform.isIOS) {
       return await GptomAidlPluginIOS.closeBatchIOS(
@@ -257,7 +305,8 @@ class GptomAidlPlugin {
         clientEmail: clientInfo?['email'],
         clientPhone: clientInfo?['phone'],
         preferableReceiptType: preferableReceiptType,
-        printByPaymentApp: printByPaymentApp
+        printByPaymentApp: printByPaymentApp,
+        redirectTimeout: redirectTimeoutIOS,
       );
     }
     if (transactionIdAndroid == null) {

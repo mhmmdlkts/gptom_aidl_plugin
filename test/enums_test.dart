@@ -41,13 +41,23 @@ void main() {
   });
 
   group('PreferableReceiptType', () {
-    test('Keys entsprechen der GPTom-API und bleiben unverändert', () {
-      // Diese Werte (inkl. der deutschen Begriffe) kommen so aus der
-      // GPTom-API-Doku – nicht "vereinheitlichen" oder übersetzen.
-      expect(PreferableReceiptType.telephone.key, 'TELEFON');
-      expect(PreferableReceiptType.email.key, 'E-MAIL');
-      expect(PreferableReceiptType.qr.key, 'QR');
-      expect(PreferableReceiptType.print.key, 'DRUCKEN');
+    test('aidlKeys entsprechen dem ReceiptType-Enum der AIDL-Bibliothek', () {
+      // Ground Truth ist cn.nexgo.smartconnect.model.ReceiptType
+      // (android/repo, Gson ohne SerializedName): PHONE, EMAIL, QR, PRINT.
+      // Die deutschen Werte der deutschen Doku-Seite (TELEFON, DRUCKEN) sind
+      // ein Übersetzungs-Artefakt und werden von GP tom nicht verstanden.
+      expect(PreferableReceiptType.telephone.aidlKey, 'PHONE');
+      expect(PreferableReceiptType.email.aidlKey, 'EMAIL');
+      expect(PreferableReceiptType.qr.aidlKey, 'QR');
+      expect(PreferableReceiptType.print.aidlKey, 'PRINT');
+    });
+
+    test('iosKeys entsprechen der iOS-URL-Scheme-Doku', () {
+      // Laut iOS-Doku: sms, email, qr, print.
+      expect(PreferableReceiptType.telephone.iosKey, 'sms');
+      expect(PreferableReceiptType.email.iosKey, 'email');
+      expect(PreferableReceiptType.qr.iosKey, 'qr');
+      expect(PreferableReceiptType.print.iosKey, 'print');
     });
   });
 

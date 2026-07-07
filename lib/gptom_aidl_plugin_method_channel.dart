@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 import 'package:gptom_aidl_plugin/models/gptom_info.dart';
 import 'package:gptom_aidl_plugin/models/inquire_result.dart';
@@ -46,7 +47,15 @@ class MethodChannelGptomAidlPlugin extends GptomAidlPluginPlatform {
     return null;
   }
 
+  /// Nur für Tests: hebt die Platform-Guards auf, damit das über den
+  /// MethodChannel gesendete JSON auch auf dem Host geprüft werden kann.
+  @visibleForTesting
+  static bool debugBypassPlatformChecks = false;
+
   void _requireAndroid(String method) {
+    if (debugBypassPlatformChecks) {
+      return;
+    }
     if (!Platform.isAndroid) {
       throw PlatformException(
         code: 'PlatformError',

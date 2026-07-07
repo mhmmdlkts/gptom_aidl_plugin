@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 import 'package:app_links/app_links.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 import 'package:gptom_aidl_plugin/models/batch.dart';
 import 'package:url_launcher/url_launcher.dart';
@@ -32,13 +33,42 @@ class GptomAidlPluginIOS {
           gptomRedirectStream.add(uri);
         }
       }, onError: (e) {
-        print('Fehler beim Lauschen auf Redirects: $e');
+        debugPrint('GptomAidlPlugin: Fehler beim Lauschen auf Redirects: $e');
       });
 
       _isListening = true;
     } catch (e) {
-      print('Fehler bei Initialisierung von AppLinks: $e');
+      debugPrint('GptomAidlPlugin: Fehler bei Initialisierung von AppLinks: $e');
     }
+  }
+
+  /// Standard-Timeouts für den Redirect aus GP tom zurück in die App.
+  static const Duration defaultTransactionRedirectTimeout = Duration(seconds: 60);
+  static const Duration defaultCloseBatchRedirectTimeout = Duration(seconds: 15);
+
+  /// Baut die URL für gptom://batch/close (Werte laut iOS-URL-Scheme-Doku).
+  @visibleForTesting
+  static Uri buildCloseBatchUri({
+    required String redirectUrl,
+    String? clientID,
+    bool printByPaymentApp = true,
+    PreferableReceiptType? preferableReceiptType,
+    String? clientPhone,
+    String? clientEmail,
+  }) {
+    return Uri(
+      scheme: 'gptom',
+      host: 'batch',
+      path: 'close',
+      queryParameters: {
+        if (clientID != null) 'clientID': clientID,
+        'redirectUrl': redirectUrl,
+        'printByPaymentApp': printByPaymentApp.toString(),
+        if (preferableReceiptType != null) 'preferableReceiptType': preferableReceiptType.iosKey,
+        if (clientPhone != null) 'clientPhone': clientPhone,
+        if (clientEmail != null) 'clientEmail': clientEmail,
+      },
+    );
   }
 
   static Future<Batch> closeBatchIOS({
@@ -47,6 +77,7 @@ class GptomAidlPluginIOS {
     PreferableReceiptType? preferableReceiptType,
     String? clientPhone,
     String? clientEmail,
+    Duration? redirectTimeout,
   }) async {
     if (!Platform.isIOS) {
       throw PlatformException(
@@ -55,23 +86,18 @@ class GptomAidlPluginIOS {
       );
     }
 
-    final uri = Uri(
-      scheme: 'gptom',
-      host: 'batch',
-      path: 'close',
-      queryParameters: {
-        if (clientID != null) 'clientID': clientID,
-        'redirectUrl': _redirectUrl,
-        'printByPaymentApp': printByPaymentApp.toString(),
-        if (preferableReceiptType != null) 'preferableReceiptType': preferableReceiptType.key,
-        if (clientPhone != null) 'clientPhone': clientPhone,
-        if (clientEmail != null) 'clientEmail': clientEmail,
-      },
+    final uri = buildCloseBatchUri(
+      redirectUrl: _redirectUrl,
+      clientID: clientID,
+      printByPaymentApp: printByPaymentApp,
+      preferableReceiptType: preferableReceiptType,
+      clientPhone: clientPhone,
+      clientEmail: clientEmail,
     );
 
     // Vor dem Öffnen abonnieren, damit kein Redirect verpasst wird.
-    final redirectFuture =
-        gptomRedirectStream.stream.first.timeout(Duration(seconds: 15));
+    final redirectFuture = gptomRedirectStream.stream.first
+        .timeout(redirectTimeout ?? defaultCloseBatchRedirectTimeout);
 
     final success = await launchUrl(uri);
 
@@ -85,18 +111,22 @@ class GptomAidlPluginIOS {
 
     try {
       final redirectedUri = await redirectFuture;
-
-      final query = redirectedUri.queryParameters;
-      final batchRaw = query['batch'];
-      if (batchRaw == null) {
-        throw Exception('Kein Batch im Redirect enthalten');
-      }
-      return Batch.fromQuery(batchRaw);
+      return batchFromRedirect(redirectedUri);
     } catch (e) {
       throw Exception(
         'Kein Redirect erhalten oder Timeout, error: $e',
       );
     }
+  }
+
+  /// Parst den Batch aus dem Redirect von gptom://batch/close.
+  @visibleForTesting
+  static Batch batchFromRedirect(Uri redirectedUri) {
+    final batchRaw = redirectedUri.queryParameters['batch'];
+    if (batchRaw == null) {
+      throw Exception('Kein Batch im Redirect enthalten');
+    }
+    return Batch.fromQuery(batchRaw);
   }
 
   /// Receipt-Beträge liefert GPTom als Euro-Dezimalwerte (z. B. "4.35").
@@ -105,6 +135,151 @@ class GptomAidlPluginIOS {
     final parsed = double.tryParse(value.toString());
     if (parsed == null) return null;
     return (parsed * 100).round();
+  }
+
+  /// Baut die URL für gptom://transaction/create (Sale).
+  @visibleForTesting
+  static Uri buildCreateTransactionUri({
+    required int amountCents,
+    required String redirectUrl,
+    required TransactionMethode transactionMethode,
+    String? originReferenceNum,
+    String? clientID,
+    bool printByPaymentApp = true,
+    PreferableReceiptType? preferableReceiptType,
+    String? clientPhone,
+    String? clientEmail,
+    int? tipAmountCents,
+    bool tipCollect = false,
+  }) {
+    return Uri(
+      scheme: 'gptom',
+      host: 'transaction',
+      path: 'create',
+      queryParameters: {
+        // GPTom erwartet den Betrag in Cent (*100-Format)
+        'amount': amountCents.toString(),
+        if (clientID != null) 'clientID': clientID,
+        if (originReferenceNum != null) 'originReferenceNum': originReferenceNum,
+        'redirectUrl': redirectUrl,
+        'printByPaymentApp': printByPaymentApp.toString(),
+        if (preferableReceiptType != null) 'preferableReceiptType': preferableReceiptType.iosKey,
+        if (clientPhone != null) 'clientPhone': clientPhone,
+        if (clientEmail != null) 'clientEmail': clientEmail,
+        if (tipAmountCents != null) 'tipAmount': tipAmountCents.toString(),
+        'tipCollect': tipCollect.toString(),
+        'transactionType': transactionMethode.text,
+      },
+    );
+  }
+
+  /// Baut die URL für gptom://transaction/cancel (Void).
+  @visibleForTesting
+  static Uri buildCancelTransactionUri({
+    required String amsID,
+    required String redirectUrl,
+    String? clientID,
+    bool printByPaymentApp = true,
+    PreferableReceiptType? preferableReceiptType,
+    String? clientPhone,
+    String? clientEmail,
+  }) {
+    return Uri(
+      scheme: 'gptom',
+      host: 'transaction',
+      path: 'cancel',
+      queryParameters: {
+        'amsID': amsID,
+        if (clientID != null) 'clientID': clientID,
+        'redirectUrl': redirectUrl,
+        'printByPaymentApp': printByPaymentApp.toString(),
+        if (preferableReceiptType != null) 'preferableReceiptType': preferableReceiptType.iosKey,
+        if (clientPhone != null) 'clientPhone': clientPhone,
+        if (clientEmail != null) 'clientEmail': clientEmail,
+      },
+    );
+  }
+
+  /// Gemeinsames Receipt-Parsing für create/cancel-Redirects.
+  /// Bei create ist die "eigene" Transaktions-ID die amsID, bei cancel die
+  /// transactionID (und die amsID landet in externalTransactionID).
+  static RequestResult _requestResultFromReceipt(
+    Uri redirectedUri, {
+    required bool printByPaymentApp,
+    required bool isCancel,
+  }) {
+    final query = redirectedUri.queryParameters;
+    final receiptRaw = query['receipt'];
+
+    if (receiptRaw == null) {
+      return RequestResult(result: -1004, responseMessage: 'Kein Receipt enthalten');
+    }
+
+    final receipt = jsonDecode(receiptRaw);
+
+    String cardNumber = receipt['cardNumber'] ?? '';
+    if (cardNumber.length == 4) {
+      cardNumber = '**** **** **** $cardNumber';
+    }
+    String? date, time;
+
+    if (receipt['date'] != null) {
+      final dateTime = DateTime.parse(receipt['date']);
+      date = '${dateTime.day.toString().padLeft(2, '0')}${dateTime.month.toString().padLeft(2, '0')}${dateTime.year.toString().substring(2)}';
+      time = '${dateTime.hour.toString().padLeft(2, '0')}${dateTime.minute.toString().padLeft(2, '0')}${dateTime.second.toString().padLeft(2, '0')}';
+    }
+
+    return RequestResult(
+      result: receipt['result'],
+      transactionId: isCancel ? receipt['transactionID'] : receipt['amsID'],
+      amountCents: _centsFromReceipt(receipt['amount']),
+      tipAmountCents: _centsFromReceipt(receipt['tipAmount']),
+      totalAmountCents: _centsFromReceipt(receipt['totalAmount']),
+      batchNumber: receipt['batchNumber'],
+      approvedCode: receipt['authorizationCode'],
+      emvAppLable: receipt['emvAppLabel'],
+      emvAid: receipt['emvAid'],
+      responseMessage: query['status'],
+      sequenceNumber: receipt['sequenceNumber'],
+      terminalID: receipt['terminalID'],
+      cardNumber: cardNumber,
+      cardProduct: receipt['cardType'],
+      currencyCode: receipt['currencyCode'],
+      pinOk: receipt['pinOk'] == true,
+      printByPaymentApp: printByPaymentApp,
+      externalTransactionID: isCancel ? receipt['amsID'] : receipt['transactionID'],
+      date: date,
+      cardDataEntry: receipt['cardEntryMode'],
+      amsID: receipt['amsID'],
+      time: time,
+      transactionType: isCancel ? TransactionType.voidSell : TransactionType.sell,
+    );
+  }
+
+  /// Parst das Ergebnis aus dem Redirect von gptom://transaction/create.
+  @visibleForTesting
+  static RequestResult requestResultFromCreateRedirect(
+    Uri redirectedUri, {
+    required bool printByPaymentApp,
+  }) {
+    return _requestResultFromReceipt(
+      redirectedUri,
+      printByPaymentApp: printByPaymentApp,
+      isCancel: false,
+    );
+  }
+
+  /// Parst das Ergebnis aus dem Redirect von gptom://transaction/cancel.
+  @visibleForTesting
+  static RequestResult requestResultFromCancelRedirect(
+    Uri redirectedUri, {
+    required bool printByPaymentApp,
+  }) {
+    return _requestResultFromReceipt(
+      redirectedUri,
+      printByPaymentApp: printByPaymentApp,
+      isCancel: true,
+    );
   }
 
   static Future<RequestResult> createTransactionIOS({
@@ -118,33 +293,28 @@ class GptomAidlPluginIOS {
     int? tipAmountCents,
     bool tipCollect = false,
     required TransactionMethode transactionMethode,
+    Duration? redirectTimeout,
   }) async {
     if (!Platform.isIOS) {
       return RequestResult.exception();
     }
-    final uri = Uri(
-      scheme: 'gptom',
-      host: 'transaction',
-      path: 'create',
-      queryParameters: {
-        // GPTom erwartet den Betrag in Cent (*100-Format)
-        'amount': amountCents.toString(),
-        if (clientID != null) 'clientID': clientID,
-        if (originReferenceNum != null) 'originReferenceNum': originReferenceNum,
-        'redirectUrl': _redirectUrl,
-        'printByPaymentApp': printByPaymentApp.toString(),
-        if (preferableReceiptType != null) 'preferableReceiptType': preferableReceiptType.key,
-        if (clientPhone != null) 'clientPhone': clientPhone,
-        if (clientEmail != null) 'clientEmail': clientEmail,
-        if (tipAmountCents != null) 'tipAmount': tipAmountCents.toString(),
-        'tipCollect': tipCollect.toString(),
-        'transactionType': transactionMethode.text,
-      },
+    final uri = buildCreateTransactionUri(
+      amountCents: amountCents,
+      redirectUrl: _redirectUrl,
+      transactionMethode: transactionMethode,
+      originReferenceNum: originReferenceNum,
+      clientID: clientID,
+      printByPaymentApp: printByPaymentApp,
+      preferableReceiptType: preferableReceiptType,
+      clientPhone: clientPhone,
+      clientEmail: clientEmail,
+      tipAmountCents: tipAmountCents,
+      tipCollect: tipCollect,
     );
 
     // Vor dem Öffnen abonnieren, damit kein Redirect verpasst wird.
-    final redirectFuture =
-        gptomRedirectStream.stream.first.timeout(Duration(seconds: 60));
+    final redirectFuture = gptomRedirectStream.stream.first
+        .timeout(redirectTimeout ?? defaultTransactionRedirectTimeout);
 
     final success = await launchUrl(uri);
 
@@ -155,52 +325,9 @@ class GptomAidlPluginIOS {
 
     try {
       final redirectedUri = await redirectFuture;
-
-      final query = redirectedUri.queryParameters;
-      final receiptRaw = query['receipt'];
-
-      if (receiptRaw == null) {
-        return RequestResult(result: -1004, responseMessage: 'Kein Receipt enthalten');
-      }
-
-      final receipt = jsonDecode(receiptRaw);
-
-      String cardNumber = receipt['cardNumber'] ?? '';
-      if (cardNumber.length == 4) {
-        cardNumber = '**** **** **** $cardNumber';
-      }
-      String? date, time;
-
-      if (receipt['date'] != null) {
-        final dateTime = DateTime.parse(receipt['date']);
-        date = '${dateTime.day.toString().padLeft(2, '0')}${dateTime.month.toString().padLeft(2, '0')}${dateTime.year.toString().substring(2)}';
-        time = '${dateTime.hour.toString().padLeft(2, '0')}${dateTime.minute.toString().padLeft(2, '0')}${dateTime.second.toString().padLeft(2, '0')}';
-      }
-
-      return RequestResult(
-        result: receipt['result'],
-        transactionId: receipt['amsID'],
-        amountCents: _centsFromReceipt(receipt['amount']),
-        tipAmountCents: _centsFromReceipt(receipt['tipAmount']),
-        totalAmountCents: _centsFromReceipt(receipt['totalAmount']),
-        batchNumber: receipt['batchNumber'],
-        approvedCode: receipt['authorizationCode'],
-        emvAppLable: receipt['emvAppLabel'],
-        emvAid: receipt['emvAid'],
-        responseMessage: query['status'],
-        sequenceNumber: receipt['sequenceNumber'],
-        terminalID: receipt['terminalID'],
-        cardNumber: cardNumber,
-        cardProduct: receipt['cardType'],
-        currencyCode: receipt['currencyCode'],
-        pinOk: receipt['pinOk'] == true,
+      return requestResultFromCreateRedirect(
+        redirectedUri,
         printByPaymentApp: printByPaymentApp,
-        externalTransactionID: receipt['transactionID'],
-        date: date,
-        cardDataEntry: receipt['cardEntryMode'],
-        amsID: receipt['amsID'],
-        time: time,
-        transactionType: TransactionType.sell
       );
     } catch (e) {
       return RequestResult(result: -1003, responseMessage: 'Kein Redirect erhalten oder Timeout');
@@ -214,29 +341,25 @@ class GptomAidlPluginIOS {
     PreferableReceiptType? preferableReceiptType,
     String? clientPhone,
     String? clientEmail,
+    Duration? redirectTimeout,
   }) async {
     if (!Platform.isIOS) {
       return RequestResult.exception();
     }
 
-    final uri = Uri(
-      scheme: 'gptom',
-      host: 'transaction',
-      path: 'cancel',
-      queryParameters: {
-        'amsID': amsID,
-        if (clientID != null) 'clientID': clientID,
-        'redirectUrl': _redirectUrl,
-        'printByPaymentApp': printByPaymentApp.toString(),
-        if (preferableReceiptType != null) 'preferableReceiptType': preferableReceiptType.key,
-        if (clientPhone != null) 'clientPhone': clientPhone,
-        if (clientEmail != null) 'clientEmail': clientEmail,
-      },
+    final uri = buildCancelTransactionUri(
+      amsID: amsID,
+      redirectUrl: _redirectUrl,
+      clientID: clientID,
+      printByPaymentApp: printByPaymentApp,
+      preferableReceiptType: preferableReceiptType,
+      clientPhone: clientPhone,
+      clientEmail: clientEmail,
     );
 
     // Vor dem Öffnen abonnieren, damit kein Redirect verpasst wird.
-    final redirectFuture =
-        gptomRedirectStream.stream.first.timeout(Duration(seconds: 60));
+    final redirectFuture = gptomRedirectStream.stream.first
+        .timeout(redirectTimeout ?? defaultTransactionRedirectTimeout);
 
     final success = await launchUrl(uri);
 
@@ -247,54 +370,12 @@ class GptomAidlPluginIOS {
 
     try {
       final redirectedUri = await redirectFuture;
-      final query = redirectedUri.queryParameters;
-      final receiptRaw = query['receipt'];
-
-      if (receiptRaw == null) {
-        return RequestResult(result: -1004, responseMessage: 'Kein Receipt enthalten');
-      }
-
-      final receipt = jsonDecode(receiptRaw);
-      String cardNumber = receipt['cardNumber'] ?? '';
-      if (cardNumber.length == 4) {
-        cardNumber = '**** **** **** $cardNumber';
-      }
-
-      String? date, time;
-      if (receipt['date'] != null) {
-        final dateTime = DateTime.parse(receipt['date']);
-        date = '${dateTime.day.toString().padLeft(2, '0')}${dateTime.month.toString().padLeft(2, '0')}${dateTime.year.toString().substring(2)}';
-        time = '${dateTime.hour.toString().padLeft(2, '0')}${dateTime.minute.toString().padLeft(2, '0')}${dateTime.second.toString().padLeft(2, '0')}';
-      }
-
-      return RequestResult(
-        result: receipt['result'],
-        transactionId: receipt['transactionID'],
-        amountCents: _centsFromReceipt(receipt['amount']),
-        totalAmountCents: _centsFromReceipt(receipt['totalAmount']),
-        tipAmountCents: _centsFromReceipt(receipt['tipAmount']),
-        batchNumber: receipt['batchNumber'],
-        approvedCode: receipt['authorizationCode'],
-        emvAppLable: receipt['emvAppLabel'],
-        emvAid: receipt['emvAid'],
-        responseMessage: query['status'],
-        sequenceNumber: receipt['sequenceNumber'],
-        terminalID: receipt['terminalID'],
-        cardNumber: cardNumber,
-        cardProduct: receipt['cardType'],
-        currencyCode: receipt['currencyCode'],
-        pinOk: receipt['pinOk'] == true,
+      return requestResultFromCancelRedirect(
+        redirectedUri,
         printByPaymentApp: printByPaymentApp,
-        externalTransactionID: receipt['amsID'],
-        date: date,
-        cardDataEntry: receipt['cardEntryMode'],
-        amsID: receipt['amsID'],
-        time: time,
-        transactionType: TransactionType.voidSell,
       );
     } catch (e) {
       return RequestResult(result: -1003, responseMessage: 'Kein Redirect erhalten oder Timeout');
     }
   }
-
 }

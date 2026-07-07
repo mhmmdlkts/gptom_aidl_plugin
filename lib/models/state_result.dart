@@ -79,12 +79,19 @@ class StateResult {
     );
   }
 
+  /// Parst den JSON-String aus dem nativen Callback. Liefert bei kaputtem
+  /// oder unerwartetem JSON ein Fehler-Ergebnis (resultCode -1001) statt zu
+  /// werfen – die GP tom Antwort ist Fremd-Input.
   factory StateResult.fromJson(String jsonStr) {
-    final decoded = jsonDecode(jsonStr);
-    if (decoded is Map<String, dynamic>) {
-      return StateResult.fromMap(decoded);
+    try {
+      final decoded = jsonDecode(jsonStr);
+      if (decoded is Map<String, dynamic>) {
+        return StateResult.fromMap(decoded);
+      }
+    } catch (_) {
+      // fällt unten auf exception zurück
     }
-    throw FormatException('StateResult.fromJson: JSON was not a Map<String,dynamic>');
+    return StateResult.exception();
   }
 
   factory StateResult.exception() {

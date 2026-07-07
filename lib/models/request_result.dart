@@ -92,7 +92,9 @@ class RequestResult {
       date: map['date'] as String?,
       time: map['time'] as String?,
       emvAid: map['emvAid'] as String?,
-      emvAppLable: map['emvAppLable'] as String?,
+      // TransactionResultV2Entity heißt (korrekt) emvAppLabel – nur die
+      // Inquire-Antwort hat den Backend-Tippfehler "emvAppLable".
+      emvAppLable: (map['emvAppLabel'] ?? map['emvAppLable']) as String?,
       externalTransactionID: map['externalTransactionID'] as String?,
       merchantID: map['merchantID'] as String?,
       merchantInfo: map['merchantInfo'] != null
@@ -117,14 +119,19 @@ class RequestResult {
     return RequestResult(result: -1001);
   }
 
-  /// Aus einem JSON-String (falls dein Native Plugin einen JSON-String zurückgibt)
+  /// Parst den JSON-String aus dem nativen Callback. Liefert bei kaputtem
+  /// oder unerwartetem JSON ein Fehler-Ergebnis (result -1001) statt zu
+  /// werfen – die GP tom Antwort ist Fremd-Input.
   factory RequestResult.fromJson(String jsonStr) {
-    final decoded = jsonDecode(jsonStr);
-    if (decoded is Map<String, dynamic>) {
-      return RequestResult.fromMap(decoded);
-    } else {
-      return RequestResult.exception();
+    try {
+      final decoded = jsonDecode(jsonStr);
+      if (decoded is Map<String, dynamic>) {
+        return RequestResult.fromMap(decoded);
+      }
+    } catch (_) {
+      // fällt unten auf exception zurück
     }
+    return RequestResult.exception();
   }
 
   @override
@@ -143,7 +150,9 @@ class RequestResult {
   Map<String, dynamic> toMap() {
     return {
       'result': result,
-      'trasanctionID': transactionId,
+      // Keys wie in TransactionResultV2Entity (fromMap liest dieselben)
+      'amsID': amsID,
+      'transactionID': transactionId,
       'approvedCode': approvedCode,
       'merchantID': merchantID,
       'terminalID': terminalID,
@@ -159,12 +168,12 @@ class RequestResult {
       'date': date,
       'time': time,
       'emvAid': emvAid,
-      'emvAppLable': emvAppLable,
+      'emvAppLabel': emvAppLable,
       'externalTransactionID': externalTransactionID,
       'batchNumber': batchNumber,
       'printByPaymentApp': printByPaymentApp,
       'pinOk': pinOk,
-      'transacitonType': transactionType?.id,
+      'transactionType': transactionType?.id,
       'sequenceNumber': sequenceNumber,
     };
   }

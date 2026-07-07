@@ -158,8 +158,43 @@ void main() {
       expect(params['printByPaymentApp'], true);
       expect(params['tipCollect'], true);
       expect(params['openGptomUI'], true);
-      // Wert kommt so aus der GPTom-API – nicht "korrigieren"
-      expect(params['preferableReceiptType'], 'DRUCKEN');
+      // ReceiptType-Enum der AIDL-Bibliothek: PHONE, EMAIL, QR, PRINT
+      expect(params['preferableReceiptType'], 'PRINT');
+    });
+
+    test('hebt flache clientInfo in die contact-Struktur (Beleg-Daten)', () async {
+      await plugin.sell(
+        transactionIdAndroid: 'tx-1',
+        amountCents: 1111,
+        transactionMethode: TransactionMethode.card,
+        clientInfo: {
+          'email': 'kunde@example.com',
+          'phone': '+436601234567',
+        },
+      );
+      final params = fake.lastRequestParams!;
+      // GP tom parst clientInfo als ClientInfoEntity{contact:{email,phone}} –
+      // flache Keys würden stillschweigend verworfen.
+      expect(params['clientInfo'], {
+        'contact': {
+          'email': 'kunde@example.com',
+          'phone': '+436601234567',
+        },
+      });
+    });
+
+    test('lässt bereits verschachtelte clientInfo unverändert', () async {
+      await plugin.sell(
+        transactionIdAndroid: 'tx-1',
+        amountCents: 1111,
+        transactionMethode: TransactionMethode.card,
+        clientInfo: {
+          'contact': {'email': 'kunde@example.com'},
+        },
+      );
+      expect(fake.lastRequestParams!['clientInfo'], {
+        'contact': {'email': 'kunde@example.com'},
+      });
     });
 
     test('wirft ohne transactionIdAndroid', () async {

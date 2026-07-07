@@ -137,12 +137,17 @@ class InquireResult {
       date: map['date'] as String?,
       time: map['time'] as String?,
       emvAid: map['emvAid'] as String?,
-      emvAppLable: map['emvAppLable'] as String?,
+      // "emvAppLable" ist der echte Key der GPTom-Antwort (Backend-Tippfehler
+      // in InquireResultEntity); Fallback, falls GPTom ihn mal korrigiert.
+      emvAppLable: (map['emvAppLable'] ?? map['emvAppLabel']) as String?,
       externalTransactionID: map['externalTransactionID'] as String?,
       batchNumber: map['batchNumber'] as String?,
       printByPaymentApp: map['printByPaymentApp'] as bool?,
       pinOk: map['pinOk'] as bool?,
-      transactionType: map['transacitonType'] is int ? TransactionType.values.where((element) => element.id == map['transacitonType']).firstOrNull : null,
+      // "transacitonType" ist der echte Key der GPTom-Antwort (Tippfehler in
+      // InquireResultEntity); Fallback auf die korrekte Schreibweise.
+      transactionType:
+          TransactionType.fromId(map['transacitonType'] ?? map['transactionType']),
       sequenceNumber: map['sequenceNumber'] as String?,
 
       merchantInfo: map['merchantInfo'] != null
@@ -176,14 +181,19 @@ class InquireResult {
     );
   }
 
-  /// Parse aus JSON-String (z. B. wenn dein natives Plugin einen String zurückgibt).
+  /// Parst den JSON-String aus dem nativen Callback. Liefert bei kaputtem
+  /// oder unerwartetem JSON ein Fehler-Ergebnis (result -1001) statt zu
+  /// werfen – die GP tom Antwort ist Fremd-Input.
   factory InquireResult.fromJson(String jsonStr) {
-    final dynamic decoded = jsonDecode(jsonStr);
-    if (decoded is Map<String, dynamic>) {
-      return InquireResult.fromMap(decoded);
-    } else {
-      throw FormatException('InquireResult: JSON was not Map<String,dynamic>');
+    try {
+      final dynamic decoded = jsonDecode(jsonStr);
+      if (decoded is Map<String, dynamic>) {
+        return InquireResult.fromMap(decoded);
+      }
+    } catch (_) {
+      // fällt unten auf exception zurück
     }
+    return InquireResult.exception();
   }
 
   Map<String, dynamic> toMap() {

@@ -18,12 +18,17 @@ class Batch implements Comparable<Batch> {
   final int totalAmountCents;
   final String amsId;
 
+  /// Null-sicherer Zugriff auf einen SubBatch (z. B. 'CARD', 'CASH').
+  SubBatch? subBatch(String key) => subBatches[key];
+
+  /// Achtung: werfen, wenn GP tom den jeweiligen SubBatch nicht liefert –
+  /// im Zweifel [subBatch] verwenden.
   SubBatch get cardBatch => subBatches['CARD']!;
   SubBatch get goCryptoBatch => subBatches['GO_CRYPTO']!;
   SubBatch get cashBatch => subBatches['CASH']!;
   SubBatch get accountPaymentBatch => subBatches['ACCOUNT_PAYMENT']!;
 
-  bool get isSuccess => amsId.isNotEmpty; // TODO check on error
+  bool get isSuccess => amsId.isNotEmpty;
 
   /// Komfort-Getter für Anzeigen in Euro.
   double get saleAmountEuro => saleAmountCents / 100;
@@ -50,22 +55,40 @@ class Batch implements Comparable<Batch> {
   /// GPTom liefert die Batch-Beträge als Euro-Dezimalwerte (z. B. 95.5).
   static int _centsFromEuro(num value) => (value * 100).round();
 
+  static int _asInt(dynamic value) =>
+      value is num ? value.toInt() : int.tryParse('$value') ?? 0;
+
+  static int _asCents(dynamic value) {
+    if (value is num) return _centsFromEuro(value);
+    final parsed = double.tryParse('$value');
+    return parsed == null ? 0 : _centsFromEuro(parsed);
+  }
+
+  static DateTime? _asDate(dynamic value) =>
+      value == null ? null : DateTime.tryParse(value.toString());
+
+  /// Defensiv geparst: fehlende/unerwartete Felder werden zu 0/''/null statt
+  /// zu werfen – der Batch kommt als Fremd-Input aus dem GPTom-Redirect.
   factory Batch.fromJson(Map<String, dynamic> json) {
     return Batch(
-      saleCount: json['saleCount'],
-      previousBatchDate: json['previousBatchDate']!=null?DateTime.parse(json['previousBatchDate']):null,
-      voidCount: json['voidCount'],
-      firstTransactionDate: json['firstTransactionDate']!=null?DateTime.parse(json['firstTransactionDate']):null,
-      saleAmountCents: _centsFromEuro(json['saleAmount'] as num),
-      invalidCount: json['invalidCount'],
-      communicationId: json['communicationId'],
-      date: DateTime.parse(json['date']),
-      totalCount: json['totalCount'],
-      voidAmountCents: _centsFromEuro(json['voidAmount'] as num),
-      subBatches: (json['subBatches'] as Map<String, dynamic>).map((key, value) => MapEntry(key, SubBatch.fromJson(value))),
-      currency: json['currency'],
-      totalAmountCents: _centsFromEuro(json['totalAmount'] as num),
-      amsId: json['amsId'],
+      saleCount: _asInt(json['saleCount']),
+      previousBatchDate: _asDate(json['previousBatchDate']),
+      voidCount: _asInt(json['voidCount']),
+      firstTransactionDate: _asDate(json['firstTransactionDate']),
+      saleAmountCents: _asCents(json['saleAmount']),
+      invalidCount: _asInt(json['invalidCount']),
+      communicationId: json['communicationId']?.toString() ?? '',
+      date: _asDate(json['date']) ?? DateTime.fromMillisecondsSinceEpoch(0),
+      totalCount: _asInt(json['totalCount']),
+      voidAmountCents: _asCents(json['voidAmount']),
+      subBatches: json['subBatches'] is Map
+          ? Map<String, dynamic>.from(json['subBatches'] as Map).map(
+              (key, value) => MapEntry(
+                  key, SubBatch.fromJson(Map<String, dynamic>.from(value as Map))))
+          : const {},
+      currency: json['currency']?.toString() ?? '',
+      totalAmountCents: _asCents(json['totalAmount']),
+      amsId: json['amsId']?.toString() ?? '',
     );
   }
 
@@ -111,7 +134,8 @@ class SubBatch {
   final String closeBatchNumber;
   final int totalAmountCents;
 
-  bool get exists => totalCount > 0 && totalAmountCents != 0 && saleCount > 0 && voidCount > 0 && voidAmountCents != 0 && saleAmountCents != 0;
+  /// Ob in diesem SubBatch überhaupt Transaktionen enthalten sind.
+  bool get exists => totalCount > 0 || totalAmountCents != 0;
 
   /// Komfort-Getter für Anzeigen in Euro.
   double get saleAmountEuro => saleAmountCents / 100;
@@ -130,13 +154,13 @@ class SubBatch {
 
   factory SubBatch.fromJson(Map<String, dynamic> json) {
     return SubBatch(
-      voidCount: json['voidCount'],
-      totalCount: json['totalCount'],
-      saleAmountCents: Batch._centsFromEuro(json['saleAmount'] as num),
-      voidAmountCents: Batch._centsFromEuro(json['voidAmount'] as num),
-      saleCount: json['saleCount'],
-      closeBatchNumber: json['closeBatchNumber'],
-      totalAmountCents: Batch._centsFromEuro(json['totalAmount'] as num),
+      voidCount: Batch._asInt(json['voidCount']),
+      totalCount: Batch._asInt(json['totalCount']),
+      saleAmountCents: Batch._asCents(json['saleAmount']),
+      voidAmountCents: Batch._asCents(json['voidAmount']),
+      saleCount: Batch._asInt(json['saleCount']),
+      closeBatchNumber: json['closeBatchNumber']?.toString() ?? '',
+      totalAmountCents: Batch._asCents(json['totalAmount']),
     );
   }
 
