@@ -129,6 +129,17 @@ class GptomAidlPluginIOS {
     return Batch.fromQuery(batchRaw);
   }
 
+  /// Status-Wert, mit dem GP tom im Redirect einen erfolgreichen Abschluss
+  /// meldet (query["status"]). Wird nur gebraucht, wenn KEIN `receipt` im
+  /// Redirect steckt – dann ist der Status die einzige verlässliche
+  /// Information darüber, ob die Karte belastet wurde. Bewusst nur der
+  /// eindeutig belegte Wert: ein falsch als Erfolg gewerteter Status würde
+  /// eine nicht kassierte Zahlung als Beleg aufzeichnen.
+  static const Set<String> _completedStatuses = {'COMPLETED'};
+
+  static bool _statusIsCompleted(String? status) =>
+      status != null && _completedStatuses.contains(status.toUpperCase());
+
   /// Receipt-Beträge liefert GPTom als Euro-Dezimalwerte (z. B. "4.35").
   static int? _centsFromReceipt(dynamic value) {
     if (value == null) return null;
@@ -210,9 +221,33 @@ class GptomAidlPluginIOS {
   }) {
     final query = redirectedUri.queryParameters;
     final receiptRaw = query['receipt'];
+    final status = query['status'];
 
     if (receiptRaw == null) {
-      return RequestResult(result: -1004, responseMessage: 'Kein Receipt enthalten');
+      // GP tom liefert bei erfolgreichem Abschluss gelegentlich keinen
+      // `receipt`-Parameter, meldet den Erfolg aber über `status`
+      // (z. B. "COMPLETED"). Diesen Fall NICHT als -1004 verwerfen – sonst
+      // gilt eine tatsächlich belastete Karte als abgebrochen und der Umsatz
+      // fehlt in der Aufzeichnung. Ohne Beleg fehlen die Kartendetails
+      // (amsID, Betrag) – der Abschluss selbst ist aber verlässlich.
+      if (_statusIsCompleted(status)) {
+        return RequestResult(
+          result: 0,
+          responseMessage: status,
+          amsID: query['amsID'],
+          transactionId: query['amsID'],
+          externalTransactionID: query['transactionID'],
+          printByPaymentApp: printByPaymentApp,
+          transactionType:
+              isCancel ? TransactionType.voidSell : TransactionType.sell,
+        );
+      }
+      // Kein Beleg und kein Erfolgs-Status → unklar/kein Abschluss. Den
+      // Status durchreichen, damit die App den echten Grund sieht.
+      return RequestResult(
+        result: -1004,
+        responseMessage: status ?? 'Kein Receipt enthalten',
+      );
     }
 
     final receipt = jsonDecode(receiptRaw);

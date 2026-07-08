@@ -1,6 +1,6 @@
 name: gptom_aidl_plugin
 description: "Anbindung der GP tom App (Global Payments SoftPOS): Kartenzahlung, Storno, Refund, Kassenschnitt, Login- und Info-Service. Android via app2app-AIDL, iOS via URL-Scheme."
-version: 0.2.0
+version: 0.2.1
 repository: https://github.com/mhmmdlkts/gptom_aidl_plugin
 # Proprietär – nicht auf pub.dev veröffentlichen
 publish_to: none

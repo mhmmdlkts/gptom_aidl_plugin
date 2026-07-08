@@ -1,3 +1,15 @@
+## 0.2.1
+
+* **Fix (iOS, Zahlungsverlust):** Ein erfolgreicher Redirect ohne `receipt`
+  wurde bisher pauschal als `-1004` verworfen – eine tatsächlich belastete
+  Karte galt damit als abgebrochen und fehlte in der Aufzeichnung. GP tom
+  meldet den Abschluss in diesem Fall nur über `query["status"]`
+  (`COMPLETED`/`APPROVED`); dieser Status wird jetzt ausgewertet und als
+  Erfolg (`result: 0`) gewertet. Ohne Beleg fehlen die Kartendetails
+  (amsID/Betrag) – der Abschluss selbst ist verlässlich. Nicht-Erfolgs-Fälle
+  bleiben `-1004`, reichen aber den echten `status` als `responseMessage`
+  durch, statt ihn zu verwerfen.
+
 ## 0.2.0
 
 * **Fix (Beleg-Daten):** `preferableReceiptType` sendet jetzt die Werte, die

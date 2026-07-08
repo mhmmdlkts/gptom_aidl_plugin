@@ -162,12 +162,28 @@ void main() {
       expect(result.cardDataEntry, 'CTLS');
     });
 
-    test('liefert -1004, wenn kein Receipt im Redirect steckt', () {
+    test('liefert -1004, wenn kein Receipt und kein Erfolgs-Status steckt', () {
       final result = GptomAidlPluginIOS.requestResultFromCreateRedirect(
         Uri.parse('myapp://redirect?status=ERROR'),
         printByPaymentApp: true,
       );
       expect(result.result, -1004);
+      // Status wird durchgereicht, damit die App den echten Grund sieht.
+      expect(result.responseMessage, 'ERROR');
+    });
+
+    test('status=COMPLETED ohne Receipt gilt als Erfolg (result 0)', () {
+      // GP tom meldet den Abschluss manchmal nur über status, ohne receipt.
+      // Ohne diesen Pfad ginge eine belastete Karte als -1004 verloren.
+      final result = GptomAidlPluginIOS.requestResultFromCreateRedirect(
+        Uri.parse('myapp://redirect?status=COMPLETED&amsID=ams-9'),
+        printByPaymentApp: true,
+      );
+      expect(result.result, 0);
+      expect(result.responseMessage, 'COMPLETED');
+      expect(result.amsID, 'ams-9');
+      expect(result.transactionId, 'ams-9');
+      expect(result.transactionType, TransactionType.sell);
     });
   });
 
