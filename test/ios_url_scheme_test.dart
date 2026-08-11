@@ -266,4 +266,28 @@ void main() {
       );
     });
   });
+
+
+  group('Redirect-Timeouts', () {
+    // Im Feld gemessen: eine Kartenzahlung dauert im Mittel rund 15 Sekunden,
+    // die längste erfolgreiche aber 123 Sekunden. Ist der Timeout kürzer,
+    // bricht das Plugin mit -1003 ab, während GP tom die Zahlung zu Ende
+    // führt — die Karte wird belastet, die App erfährt es nicht. Der Default
+    // muss deshalb deutlich über der beobachteten Höchstdauer liegen.
+    const beobachteteHoechstdauer = Duration(seconds: 123);
+
+    test('Transaktions-Timeout liegt über der beobachteten Höchstdauer', () {
+      expect(
+        GptomAidlPluginIOS.defaultTransactionRedirectTimeout,
+        greaterThan(beobachteteHoechstdauer),
+      );
+    });
+
+    test('Batch-Abschluss darf kurz bleiben (kein Kundenvorgang)', () {
+      expect(
+        GptomAidlPluginIOS.defaultCloseBatchRedirectTimeout,
+        lessThan(GptomAidlPluginIOS.defaultTransactionRedirectTimeout),
+      );
+    });
+  });
 }

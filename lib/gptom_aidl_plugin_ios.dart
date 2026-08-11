@@ -43,7 +43,14 @@ class GptomAidlPluginIOS {
   }
 
   /// Standard-Timeouts für den Redirect aus GP tom zurück in die App.
-  static const Duration defaultTransactionRedirectTimeout = Duration(seconds: 60);
+  ///
+  /// Eine Kartenzahlung dauert im Feld im Mittel rund 15 Sekunden, in
+  /// Einzelfällen aber über zwei Minuten (Karte suchen, PIN-Eingabe,
+  /// Terminal-Verbindung). Läuft der Timeout vorher ab, meldet das Plugin
+  /// -1003, während GP tom die Zahlung zu Ende führt: Die Karte wird belastet,
+  /// die aufrufende App erfährt davon nichts. Der Wert ist deshalb bewusst
+  /// großzügig bemessen.
+  static const Duration defaultTransactionRedirectTimeout = Duration(minutes: 3);
   static const Duration defaultCloseBatchRedirectTimeout = Duration(seconds: 15);
 
   /// Baut die URL für gptom://batch/close (Werte laut iOS-URL-Scheme-Doku).
