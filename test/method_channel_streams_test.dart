@@ -75,5 +75,28 @@ void main() {
       expect(info.tipEnabled, isTrue);
       expect(info.raw['mid'], '000007311211351');
     });
+
+    test('onLateTransactionResult landet im lateTransactionResultStream', () async {
+      // Kommt die GP-tom-Antwort erst nach dem Wächter-Timeout, darf sie den
+      // MethodChannel nicht mehr beantworten – sie geht als Ereignis an Dart,
+      // damit die App einen unklaren Ausgang nachträglich auflösen kann.
+      final platform = MethodChannelGptomAidlPlugin();
+
+      final resultFuture = platform.lateTransactionResultStream.first;
+      await pushNativeCall(MethodCall(
+        'onLateTransactionResult',
+        jsonEncode({
+          'result': 0,
+          'transactionID': 'tx-1',
+          'amsID': 'ams-1',
+          'amount': 435,
+        }),
+      ));
+
+      final result = await resultFuture;
+      expect(result.result, 0);
+      expect(result.transactionId, 'tx-1');
+      expect(result.amountCents, 435);
+    });
   });
 }

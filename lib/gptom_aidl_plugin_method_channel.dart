@@ -6,6 +6,7 @@ import 'package:flutter/services.dart';
 import 'package:gptom_aidl_plugin/models/gptom_info.dart';
 import 'package:gptom_aidl_plugin/models/inquire_result.dart';
 import 'package:gptom_aidl_plugin/models/login_status.dart';
+import 'package:gptom_aidl_plugin/gptom_result_code.dart';
 import 'package:gptom_aidl_plugin/models/request_result.dart';
 import 'package:url_launcher/url_launcher.dart';
 
@@ -24,10 +25,18 @@ class MethodChannelGptomAidlPlugin extends GptomAidlPluginPlatform {
       StreamController<GpTomLoginEvent>.broadcast();
   final StreamController<GpTomInfo> _gpTomInfoController =
       StreamController<GpTomInfo>.broadcast();
+  final StreamController<RequestResult> _lateTransactionController =
+      StreamController<RequestResult>.broadcast();
 
   /// Verarbeitet Pushes aus dem nativen Code (AIDL-Callbacks).
   Future<dynamic> _handleNativeCall(MethodCall call) async {
     switch (call.method) {
+      case 'onLateTransactionResult':
+        final raw = call.arguments;
+        if (raw is String) {
+          _lateTransactionController.add(RequestResult.fromJson(raw));
+        }
+        break;
       case 'onLoginStatusChanged':
         final args = Map<String, dynamic>.from(call.arguments as Map);
         final rawStatus = args['status'] as String?;
@@ -112,9 +121,26 @@ class MethodChannelGptomAidlPlugin extends GptomAidlPluginPlatform {
   Future<RequestResult> requestTransactionV2Android(Map<String, dynamic> params) async {
     _requireAndroid('requestTransactionV2Android');
     final jsonParams = jsonEncode(params);
-    final String? result = await methodChannel.invokeMethod<String>('requestTransactionV2', {
-      'requestJson': jsonParams,
-    });
+    final String? result;
+    try {
+      result = await methodChannel.invokeMethod<String>('requestTransactionV2', {
+        'requestJson': jsonParams,
+      });
+    } on PlatformException catch (e) {
+      // Der native Wächter meldet, dass GP tom nicht geantwortet hat. Das ist
+      // ein Ergebnis, keine Ausnahme – und trägt denselben Code wie auf iOS.
+      if (e.code == GptomErrorCode.timeout) {
+        return RequestResult(
+          result: GptomResultCode.timeout,
+          responseMessage: e.message,
+          error: ErrorInfo(
+            errorCode: GptomErrorCode.timeout,
+            result: GptomResultCode.timeout,
+          ),
+        );
+      }
+      rethrow;
+    }
     if (result == null) {
       return RequestResult.exception();
     }
@@ -247,6 +273,10 @@ class MethodChannelGptomAidlPlugin extends GptomAidlPluginPlatform {
 
   @override
   Stream<GpTomInfo> get gpTomInfoStream => _gpTomInfoController.stream;
+
+  @override
+  Stream<RequestResult> get lateTransactionResultStream =>
+      _lateTransactionController.stream;
 
   @override
   Future<bool> cancelTransactionIOS() async {

@@ -105,4 +105,45 @@ void main() {
       expect(result.result, -1001);
     });
   });
+
+  group('RequestResult.toMap', () {
+    test('liefert beide Schreibweisen der Beleg-Schlüssel', () {
+      // Der Beleg-Aufdruck (Backend und App-Druck) liest die Schreibweisen
+      // der Inquire-Antwort (trasanctionID, emvAppLable, transacitonType).
+      // Auf iOS kommen die Daten aus dem RequestResult – ohne diese Keys
+      // fehlen auf dem iOS-Beleg Kennung, EMV-Label und Belegart.
+      final map = RequestResult(
+        result: 0,
+        transactionId: 'tx-1',
+        emvAppLable: 'Visa Debit',
+        transactionType: TransactionType.sell,
+      ).toMap();
+
+      expect(map['transactionID'], 'tx-1');
+      expect(map['trasanctionID'], 'tx-1');
+      expect(map['emvAppLabel'], 'Visa Debit');
+      expect(map['emvAppLable'], 'Visa Debit');
+      expect(map['transactionType'], 1);
+      expect(map['transacitonType'], 1);
+    });
+
+    test('Roundtrip über fromMap bleibt möglich', () {
+      final original = RequestResult(
+        result: 0,
+        transactionId: 'tx-1',
+        amsID: 'ams-1',
+        amountCents: 435,
+        emvAppLable: 'Visa Debit',
+        transactionType: TransactionType.sell,
+      );
+
+      final zurueck = RequestResult.fromMap(original.toMap());
+
+      expect(zurueck.transactionId, 'tx-1');
+      expect(zurueck.amsID, 'ams-1');
+      expect(zurueck.amountCents, 435);
+      expect(zurueck.emvAppLable, 'Visa Debit');
+      expect(zurueck.transactionType, TransactionType.sell);
+    });
+  });
 }

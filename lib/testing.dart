@@ -85,12 +85,20 @@ class FakeGptomAidlPluginPlatform extends GptomAidlPluginPlatform {
       StreamController<GpTomLoginEvent>.broadcast();
   final StreamController<GpTomInfo> _gpTomInfoController =
       StreamController<GpTomInfo>.broadcast();
+  final StreamController<RequestResult> _lateTransactionController =
+      StreamController<RequestResult>.broadcast();
 
   /// Simuliert einen Login-Status-Push aus der GP tom App.
   void emitLoginStatus(GpTomLoginEvent event) => _loginStatusController.add(event);
 
   /// Simuliert einen Info-Push aus der GP tom App.
   void emitGpTomInfo(GpTomInfo info) => _gpTomInfoController.add(info);
+
+  /// Simuliert ein Ergebnis, das GP tom erst nach dem Wächter-Timeout
+  /// geliefert hat – damit lässt sich der Fall "unklar, dann doch bezahlt"
+  /// in App-Tests durchspielen.
+  void emitLateTransactionResult(RequestResult result) =>
+      _lateTransactionController.add(result);
 
   // --- GptomAidlPluginPlatform ----------------------------------------------
   @override
@@ -209,9 +217,14 @@ class FakeGptomAidlPluginPlatform extends GptomAidlPluginPlatform {
   @override
   Stream<GpTomInfo> get gpTomInfoStream => _gpTomInfoController.stream;
 
+  @override
+  Stream<RequestResult> get lateTransactionResultStream =>
+      _lateTransactionController.stream;
+
   /// Schließt die internen Stream-Controller (z. B. in tearDown).
   Future<void> dispose() async {
     await _loginStatusController.close();
     await _gpTomInfoController.close();
+    await _lateTransactionController.close();
   }
 }

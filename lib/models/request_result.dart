@@ -147,12 +147,22 @@ class RequestResult {
         ')';
   }
 
+  /// Beleg-Daten als Map.
+  ///
+  /// Die Keys stehen doppelt drin: einmal in der Schreibweise der
+  /// V2-Antwort (`transactionID`, `emvAppLabel`, `transactionType`) und
+  /// einmal in der der Inquire-Antwort (`trasanctionID`, `emvAppLable`,
+  /// `transacitonType` – Backend-Tippfehler). Auf Android liefert die App
+  /// die Inquire-Schreibweise weiter, auf iOS diese Map; Beleg-Aufdruck und
+  /// App-Druck finden so auf beiden Plattformen dieselben Felder.
+  /// Keine der beiden Schreibweisen darf entfallen.
   Map<String, dynamic> toMap() {
     return {
       'result': result,
       // Keys wie in TransactionResultV2Entity (fromMap liest dieselben)
       'amsID': amsID,
       'transactionID': transactionId,
+      'trasanctionID': transactionId,
       'approvedCode': approvedCode,
       'merchantID': merchantID,
       'terminalID': terminalID,
@@ -169,11 +179,13 @@ class RequestResult {
       'time': time,
       'emvAid': emvAid,
       'emvAppLabel': emvAppLable,
+      'emvAppLable': emvAppLable,
       'externalTransactionID': externalTransactionID,
       'batchNumber': batchNumber,
       'printByPaymentApp': printByPaymentApp,
       'pinOk': pinOk,
       'transactionType': transactionType?.id,
+      'transacitonType': transactionType?.id,
       'sequenceNumber': sequenceNumber,
     };
   }

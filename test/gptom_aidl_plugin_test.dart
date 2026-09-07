@@ -50,6 +50,9 @@ class _FakePlatform extends GptomAidlPluginPlatform {
   Future<bool> createTransactionIOS() async => true;
 
   @override
+  Stream<RequestResult> get lateTransactionResultStream => const Stream.empty();
+
+  @override
   Future<bool> cancelTransactionIOS() async => true;
 
   @override

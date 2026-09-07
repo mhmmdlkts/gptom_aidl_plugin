@@ -39,6 +39,11 @@ abstract class GptomAidlPluginPlatform extends PlatformInterface {
   Future<bool> createTransactionIOS();
   Future<bool> cancelTransactionIOS();
 
+  /// Ergebnisse, die GP tom erst nach dem Wächter-Timeout geliefert hat
+  /// (Android). Der MethodChannel-Aufruf hat da bereits mit TIMEOUT
+  /// geantwortet; hierüber kann die App den Ausgang nachträglich auflösen.
+  Stream<RequestResult> get lateTransactionResultStream;
+
   // --- Login-Service (AIDL 1.29.0, nur Android) ---
   Future<bool> bindLoginService({bool isDevAndroid = false});
   Future<void> unbindLoginService();

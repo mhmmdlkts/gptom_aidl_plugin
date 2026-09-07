@@ -53,6 +53,14 @@ public class GptomAidlPlugin implements FlutterPlugin, MethodChannel.MethodCallH
   private static final String LOGIN_SERVICE_ACTION = "com.globalpayments.atom.BIND_TO_LOGIN_SERVICE";
   private static final String INFO_SERVICE_ACTION = "com.globalpayments.atom.BIND_TO_INFO_SERVICE";
   private static final long BIND_TIMEOUT_MS = 5000;
+  /**
+   * Frist, binnen der GP tom auf transactionRequestV2 antworten muss. Ohne
+   * Wächter wartet die Kasse unbegrenzt, wenn die GP-tom-App weggewischt oder
+   * vom System beendet wird. Der Wert ist großzügig: eine Kartenzahlung kann
+   * mit Kartensuche und PIN-Eingabe über zwei Minuten dauern.
+   * Über das Steuerfeld "timeoutMs" im Request-JSON überschreibbar.
+   */
+  private static final long DEFAULT_TRANSACTION_TIMEOUT_MS = 240000;
 
   private MethodChannel channel;
   private Context applicationContext;
@@ -81,16 +89,21 @@ public class GptomAidlPlugin implements FlutterPlugin, MethodChannel.MethodCallH
       this.result = result;
     }
 
-    void success(Object value) {
+    /** @return true, wenn diese Antwort durchging (sonst war schon eine da). */
+    boolean success(Object value) {
       if (answered.compareAndSet(false, true)) {
         mainHandler.post(() -> result.success(value));
+        return true;
       }
+      return false;
     }
 
-    void error(String code, String message) {
+    boolean error(String code, String message) {
       if (answered.compareAndSet(false, true)) {
         mainHandler.post(() -> result.error(code, message, null));
+        return true;
       }
+      return false;
     }
   }
 
@@ -272,10 +285,20 @@ public class GptomAidlPlugin implements FlutterPlugin, MethodChannel.MethodCallH
         serviceConnection = null;
       }
 
+      // bindService() liefert nur "Anfrage angenommen" – verbunden sind wir
+      // erst bei onServiceConnected. Falls die Verbindung nie zustande kommt,
+      // nicht ewig hängen lassen.
+      final Runnable bindWatchdog = () -> {
+        if (gptomService == null) {
+          result.success(false);
+        }
+      };
+
       serviceConnection = new ServiceConnection() {
         @Override
         public void onServiceConnected(ComponentName name, IBinder service) {
           gptomService = ISmartconnectService.Stub.asInterface(service);
+          mainHandler.removeCallbacks(bindWatchdog);
           result.success(true);
         }
 
@@ -301,14 +324,7 @@ public class GptomAidlPlugin implements FlutterPlugin, MethodChannel.MethodCallH
         return;
       }
 
-      // bindService() liefert nur "Anfrage angenommen" – verbunden sind wir erst
-      // bei onServiceConnected. Falls die Verbindung nie zustande kommt, nicht
-      // ewig hängen lassen.
-      mainHandler.postDelayed(() -> {
-        if (gptomService == null) {
-          result.success(false);
-        }
-      }, BIND_TIMEOUT_MS);
+      mainHandler.postDelayed(bindWatchdog, BIND_TIMEOUT_MS);
     } catch (Exception e) {
       result.error("BIND_ERROR", e.getMessage());
     }
@@ -370,16 +386,39 @@ public class GptomAidlPlugin implements FlutterPlugin, MethodChannel.MethodCallH
               && !parsed.get("openGptomUI").isJsonNull()
               && parsed.get("openGptomUI").getAsBoolean();
 
+      long timeout = DEFAULT_TRANSACTION_TIMEOUT_MS;
+      if (parsed.has("timeoutMs") && !parsed.get("timeoutMs").isJsonNull()) {
+        try {
+          timeout = parsed.get("timeoutMs").getAsLong();
+        } catch (Exception ignored) {
+          // unbrauchbarer Wert -> Standardfrist
+        }
+      }
+      final long timeoutMs = timeout;
+
       // Steuerfelder gehören nicht ins GPTom-Request-JSON
       parsed.remove("redirect");
       parsed.remove("openGptomUI");
+      parsed.remove("timeoutMs");
 
       String finalJson = parsed.toString();
+
+      // Wächter: Antwortet GP tom nicht, darf die Kasse nicht ewig hängen.
+      final Runnable timeoutWatchdog = () -> result.error(
+              "TIMEOUT",
+              "GP tom hat binnen " + timeoutMs + " ms nicht geantwortet.");
 
       gptomService.transactionRequestV2(finalJson, new ITransactionResultListener.Stub() {
         @Override
         public void onTransactionV2Result(String resultJson) {
-          result.success(resultJson);
+          mainHandler.removeCallbacks(timeoutWatchdog);
+          if (!result.success(resultJson)) {
+            // Der Wächter hat bereits mit TIMEOUT geantwortet. Der Kanal darf
+            // nicht doppelt beantwortet werden – das echte Ergebnis geht als
+            // Ereignis an Dart, damit die App einen unklaren Ausgang
+            // nachträglich auflösen kann.
+            sendLateTransactionResult(resultJson);
+          }
         }
 
         @Override
@@ -389,6 +428,10 @@ public class GptomAidlPlugin implements FlutterPlugin, MethodChannel.MethodCallH
           // V1, deprecated
         }
       });
+
+      if (timeoutMs > 0) {
+        mainHandler.postDelayed(timeoutWatchdog, timeoutMs);
+      }
 
       if (openGptomUI) {
         Intent openGptom = applicationContext.getPackageManager()
@@ -405,6 +448,18 @@ public class GptomAidlPlugin implements FlutterPlugin, MethodChannel.MethodCallH
     } catch (Exception e) {
       result.error("INVALID_REQUEST", e.getMessage());
     }
+  }
+
+  /**
+   * Reicht ein Ergebnis nach, das erst nach dem Wächter-Timeout eintraf.
+   * Kein Log: Transaktions- und Belegdaten gehören nicht ins Protokoll.
+   */
+  private void sendLateTransactionResult(String resultJson) {
+    mainHandler.post(() -> {
+      if (channel != null) {
+        channel.invokeMethod("onLateTransactionResult", resultJson);
+      }
+    });
   }
 
   // ---------------------------------------------------------------------------
@@ -476,10 +531,17 @@ public class GptomAidlPlugin implements FlutterPlugin, MethodChannel.MethodCallH
         loginServiceConnection = null;
       }
 
+      final Runnable bindWatchdog = () -> {
+        if (loginService == null) {
+          result.success(false);
+        }
+      };
+
       loginServiceConnection = new ServiceConnection() {
         @Override
         public void onServiceConnected(ComponentName name, IBinder binder) {
           loginService = IGPTomLoginService.Stub.asInterface(binder);
+          mainHandler.removeCallbacks(bindWatchdog);
           try {
             loginService.registerCallback(loginChangedCallback);
           } catch (RemoteException e) {
@@ -510,11 +572,7 @@ public class GptomAidlPlugin implements FlutterPlugin, MethodChannel.MethodCallH
         return;
       }
 
-      mainHandler.postDelayed(() -> {
-        if (loginService == null) {
-          result.success(false);
-        }
-      }, BIND_TIMEOUT_MS);
+      mainHandler.postDelayed(bindWatchdog, BIND_TIMEOUT_MS);
     } catch (Exception e) {
       result.error("BIND_ERROR", e.getMessage());
     }
@@ -622,10 +680,17 @@ public class GptomAidlPlugin implements FlutterPlugin, MethodChannel.MethodCallH
         infoServiceConnection = null;
       }
 
+      final Runnable bindWatchdog = () -> {
+        if (infoService == null) {
+          result.success(false);
+        }
+      };
+
       infoServiceConnection = new ServiceConnection() {
         @Override
         public void onServiceConnected(ComponentName name, IBinder binder) {
           infoService = IGPTomInfoService.Stub.asInterface(binder);
+          mainHandler.removeCallbacks(bindWatchdog);
           try {
             infoService.registerCallback(infoChangedCallback);
           } catch (RemoteException e) {
@@ -656,11 +721,7 @@ public class GptomAidlPlugin implements FlutterPlugin, MethodChannel.MethodCallH
         return;
       }
 
-      mainHandler.postDelayed(() -> {
-        if (infoService == null) {
-          result.success(false);
-        }
-      }, BIND_TIMEOUT_MS);
+      mainHandler.postDelayed(bindWatchdog, BIND_TIMEOUT_MS);
     } catch (Exception e) {
       result.error("BIND_ERROR", e.getMessage());
     }

@@ -1,4 +1,5 @@
 import 'dart:io';
+import 'dart:math';
 
 import 'package:flutter/services.dart';
 import 'package:gptom_aidl_plugin/enums/transaction_type.dart';
@@ -13,7 +14,11 @@ import 'enums/cancel_mode.dart';
 import 'enums/preferable_receipt_type.dart';
 import 'enums/transaction_methode.dart';
 import 'gptom_aidl_plugin_platform_interface.dart';
+import 'gptom_result_code.dart';
 import 'models/register_result.dart';
+
+export 'gptom_aidl_plugin_ios.dart' show GptomPendingRedirect;
+export 'gptom_result_code.dart';
 
 /// GptomAidlPlugin:
 ///   Dart-Fassade für alle relevanten GPTom/SmartConnect-Methoden.
@@ -35,16 +40,59 @@ class GptomAidlPlugin {
   // ---------------------------------------------------------------------------
   Future<bool> bindService({bool isDevAndroid = false, String uriSchemeIOS = 'xxx'}) async {
     if (Platform.isIOS) {
-      if (uriSchemeIOS.isEmpty || uriSchemeIOS == 'xxx') {
-        throw ArgumentError(
-          'uriSchemeIOS muss auf iOS gesetzt werden (das eigene URL-Scheme der App), '
-          'sonst kann GPTom das Ergebnis nicht zurückliefern.',
-        );
-      }
-      GptomAidlPluginIOS.listenForGptomRedirectsIOS(uriSchemeIOS);
+      listenIOS(uriSchemeIOS);
       return Future.value(true);
     }
     return GptomAidlPluginPlatform.instance.bindService(isDevAndroid: isDevAndroid);
+  }
+
+  /// Registriert den Redirect-Listener für iOS. Gehört in `initState` der
+  /// App – nicht erst vor die Zahlung.
+  ///
+  /// Beendet iOS die Kasse, während GP tom im Vordergrund ist, kommt der
+  /// Redirect beim Kaltstart an. Lauscht dann niemand, ist die Zahlung für
+  /// die Kasse spurlos verschwunden. Wer früh lauscht, findet sie über
+  /// [pendingRedirect] wieder.
+  ///
+  /// Mehrfach aufrufbar (idempotent); auf Android ohne Wirkung.
+  void listenIOS(String uriScheme) {
+    if (Platform.isAndroid) return;
+    if (uriScheme.isEmpty || uriScheme == 'xxx') {
+      throw ArgumentError(
+        'uriSchemeIOS muss auf iOS gesetzt werden (das eigene URL-Scheme der App), '
+        'sonst kann GPTom das Ergebnis nicht zurückliefern.',
+      );
+    }
+    GptomAidlPluginIOS.listenForGptomRedirectsIOS(uriScheme);
+  }
+
+  /// Holt einen Redirect ab, für den es keinen wartenden Aufruf gab
+  /// (Kaltstart oder verspäteter Redirect) und entfernt ihn aus dem Puffer.
+  /// Mit [originReferenceNum] gezielt zur gemerkten Zahlung.
+  GptomPendingRedirect? pendingRedirect({String? originReferenceNum}) {
+    return GptomAidlPluginIOS.pendingRedirect(originReferenceNum: originReferenceNum);
+  }
+
+  /// Alle unzugeordneten Redirects, älteste zuerst (ohne sie zu entfernen).
+  List<GptomPendingRedirect> get pendingRedirects =>
+      GptomAidlPluginIOS.pendingRedirects;
+
+  /// Ergebnisse, die GP tom erst NACH dem Wächter-Timeout geliefert hat
+  /// (Android). Der Aufruf selbst hat da längst mit [GptomResultCode.timeout]
+  /// geantwortet; über diesen Strom kann die App einen unklaren Ausgang
+  /// nachträglich auflösen.
+  Stream<RequestResult> get lateTransactionResultStream =>
+      GptomAidlPluginPlatform.instance.lateTransactionResultStream;
+
+  /// Erzeugt eine Referenz für die Zuordnung eines iOS-Redirects.
+  /// GP tom nimmt höchstens 20 Zeichen entgegen.
+  static String neueReferenz() {
+    final zufall = Random.secure();
+    final buffer = StringBuffer('KE');
+    for (var i = 0; i < 16; i++) {
+      buffer.write(zufall.nextInt(16).toRadixString(16));
+    }
+    return buffer.toString();
   }
 
   /// Gibt die Service-Verbindung(en) auf Android wieder frei.
@@ -94,6 +142,7 @@ class GptomAidlPlugin {
     Map<String, dynamic>? clientInfo,
     bool openGptomUI = true,
     PreferableReceiptType? preferableReceiptType,
+    int? timeoutMs,
   }) async {
     if (amountCents != null) _requireNonNegativeCents('amountCents', amountCents);
     if (tipAmountCents != null) _requireNonNegativeCents('tipAmountCents', tipAmountCents);
@@ -102,6 +151,9 @@ class GptomAidlPlugin {
       'transactionType': transactionType.id,
       if (amountCents != null) 'amount': amountCents,
       'openGptomUI': openGptomUI,
+      // Steuerfeld: die native Seite nimmt es heraus, bevor das JSON an
+      // GP tom geht (Frist des Wächters, Standard 240 s).
+      if (timeoutMs != null) 'timeoutMs': timeoutMs,
       if (tipAmountCents != null) 'tipAmount': tipAmountCents,
       if (originTransactionId != null) 'originTransactionID': originTransactionId,
       if (cancelMode != null) 'cancelMode': cancelMode.id,
@@ -152,8 +204,17 @@ class GptomAidlPlugin {
 
   /// Verkauf. [amountCents] und [tipAmountCents] in Cent (1111 => 11,11 EUR).
   ///
-  /// [redirectTimeoutIOS] begrenzt auf iOS das Warten auf den Redirect aus
-  /// GP tom (Standard: 60 Sekunden).
+  /// [timeout] begrenzt das Warten auf die Antwort: auf iOS das Warten auf
+  /// den Redirect (Standard 3 Minuten), auf Android die Frist des nativen
+  /// Wächters auf `requestTransactionV2` (Standard 240 Sekunden). Läuft sie
+  /// ab, kommt ein [RequestResult] mit [GptomResultCode.timeout] und
+  /// `error.errorCode == GptomErrorCode.timeout` – die Karte kann dann
+  /// belastet sein, die App muss nachfragen statt zu wiederholen.
+  ///
+  /// [referenz] ist die eigene Kennung der Zahlung (z. B. die
+  /// Rechnungsnummer, höchstens 20 Zeichen). Auf iOS ordnet das Plugin den
+  /// Redirect darüber der richtigen Zahlung zu; ohne Angabe wird eine
+  /// erzeugt ([neueReferenz]).
   Future<RequestResult> sell({
     String? transactionIdAndroid,
     required int amountCents,
@@ -166,14 +227,19 @@ class GptomAidlPlugin {
     Map<String, dynamic>? redirectInfo,
     Map<String, dynamic>? clientInfo,
     PreferableReceiptType? preferableReceiptType,
+    String? referenz,
+    Duration? timeout,
+    @Deprecated('Ersetzt durch timeout (gilt für beide Plattformen)')
     Duration? redirectTimeoutIOS,
   }) async {
     _requirePositiveCents('amountCents', amountCents);
     _requireNonNegativeCents('tipAmountCents', tipAmountCents);
-    if (Platform.isIOS) {
+    final frist = timeout ?? redirectTimeoutIOS;
+    if (GptomAidlPluginIOS.isActive) {
       return await GptomAidlPluginIOS.createTransactionIOS(
         amountCents: amountCents,
         transactionMethode: transactionMethode,
+        originReferenceNum: referenz ?? neueReferenz(),
         tipCollect: tipCollect,
         tipAmountCents: tipAmountCents,
         printByPaymentApp: printByPaymentApp,
@@ -181,7 +247,7 @@ class GptomAidlPlugin {
         preferableReceiptType: preferableReceiptType,
         clientEmail: clientInfo?['email'],
         clientPhone: clientInfo?['phone'],
-        redirectTimeout: redirectTimeoutIOS,
+        redirectTimeout: frist,
       );
     }
     if (transactionIdAndroid == null) {
@@ -202,6 +268,7 @@ class GptomAidlPlugin {
       clientInfo: clientInfo,
       openGptomUI: openGptomUI,
       preferableReceiptType: preferableReceiptType,
+      timeoutMs: frist?.inMilliseconds,
     );
   }
 
@@ -215,16 +282,21 @@ class GptomAidlPlugin {
     Map<String, dynamic>? clientInfo,
     bool openGptomUI = true,
     PreferableReceiptType? preferableReceiptType,
+    String? referenz,
+    Duration? timeout,
+    @Deprecated('Ersetzt durch timeout (gilt für beide Plattformen)')
     Duration? redirectTimeoutIOS,
   }) async {
-    if (Platform.isIOS) {
+    final frist = timeout ?? redirectTimeoutIOS;
+    if (GptomAidlPluginIOS.isActive) {
       return await GptomAidlPluginIOS.cancelTransactionIOS(
         amsID: originTransactionId,
+        originReferenceNum: referenz,
         preferableReceiptType: preferableReceiptType,
         clientPhone: clientInfo?['phone'],
         clientEmail: clientInfo?['email'],
         clientID: clientId,
-        redirectTimeout: redirectTimeoutIOS,
+        redirectTimeout: frist,
       );
     }
     if (transactionIdAndroid == null) {
@@ -243,6 +315,7 @@ class GptomAidlPlugin {
       cancelMode: cancelMode,
       openGptomUI: openGptomUI,
       preferableReceiptType: preferableReceiptType,
+      timeoutMs: frist?.inMilliseconds,
     );
   }
 
@@ -259,6 +332,7 @@ class GptomAidlPlugin {
     Map<String, dynamic>? clientInfo,
     bool openGptomUI = true,
     PreferableReceiptType? preferableReceiptType,
+    Duration? timeout,
   }) async {
     _requirePositiveCents('amountCents', amountCents);
     if (Platform.isIOS) {
@@ -284,6 +358,7 @@ class GptomAidlPlugin {
       clientInfo: clientInfo,
       openGptomUI: openGptomUI,
       preferableReceiptType: preferableReceiptType,
+      timeoutMs: timeout?.inMilliseconds,
     );
   }
 
@@ -297,16 +372,19 @@ class GptomAidlPlugin {
     bool openGptomUI = true,
     PreferableReceiptType? preferableReceiptType,
     bool printByPaymentApp = false,
+    Duration? timeout,
+    @Deprecated('Ersetzt durch timeout (gilt für beide Plattformen)')
     Duration? redirectTimeoutIOS,
   }) async {
-    if (Platform.isIOS) {
+    final frist = timeout ?? redirectTimeoutIOS;
+    if (GptomAidlPluginIOS.isActive) {
       return await GptomAidlPluginIOS.closeBatchIOS(
         clientID: clientId,
         clientEmail: clientInfo?['email'],
         clientPhone: clientInfo?['phone'],
         preferableReceiptType: preferableReceiptType,
         printByPaymentApp: printByPaymentApp,
-        redirectTimeout: redirectTimeoutIOS,
+        redirectTimeout: frist,
       );
     }
     if (transactionIdAndroid == null) {
@@ -324,6 +402,7 @@ class GptomAidlPlugin {
       preferableReceiptType: preferableReceiptType,
       printByPaymentApp: printByPaymentApp,
       clientId: clientId,
+      timeoutMs: frist?.inMilliseconds,
     );
   }
 

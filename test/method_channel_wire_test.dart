@@ -143,6 +143,65 @@ void main() {
     });
   });
 
+  group('Wächter-Frist (Android)', () {
+    test('timeout wird als Steuerfeld timeoutMs mitgeschickt', () async {
+      nativeAnswer = (call) => jsonEncode({'result': 0});
+
+      await GptomAidlPlugin().sell(
+        transactionIdAndroid: 'tx-1',
+        amountCents: 100,
+        transactionMethode: TransactionMethode.card,
+        timeout: const Duration(seconds: 90),
+      );
+
+      expect(sentRequestJson()['timeoutMs'], 90000);
+    });
+
+    test('ohne Angabe bleibt der native Standard (kein timeoutMs im JSON)', () async {
+      nativeAnswer = (call) => jsonEncode({'result': 0});
+
+      await GptomAidlPlugin().sell(
+        transactionIdAndroid: 'tx-1',
+        amountCents: 100,
+        transactionMethode: TransactionMethode.card,
+      );
+
+      expect(sentRequestJson().containsKey('timeoutMs'), isFalse);
+    });
+
+    test('nativer TIMEOUT wird zu result -1003, nicht zu einer Ausnahme', () async {
+      // So meldet der Android-Wächter, dass GP tom nicht geantwortet hat.
+      nativeAnswer = (call) => throw PlatformException(
+            code: 'TIMEOUT',
+            message: 'GP tom hat nicht geantwortet',
+          );
+
+      final result = await GptomAidlPlugin().sell(
+        transactionIdAndroid: 'tx-1',
+        amountCents: 100,
+        transactionMethode: TransactionMethode.card,
+      );
+
+      // Gleicher Code wie auf iOS – die App braucht nur einen Weg.
+      expect(result.result, GptomResultCode.timeout);
+      expect(result.error?.errorCode, GptomErrorCode.timeout);
+      expect(result.responseMessage, 'GP tom hat nicht geantwortet');
+    });
+
+    test('andere PlatformExceptions bleiben Ausnahmen', () async {
+      nativeAnswer = (call) => throw PlatformException(code: 'NOT_BOUND');
+
+      await expectLater(
+        GptomAidlPlugin().sell(
+          transactionIdAndroid: 'tx-1',
+          amountCents: 100,
+          transactionMethode: TransactionMethode.card,
+        ),
+        throwsA(isA<PlatformException>()),
+      );
+    });
+  });
+
   group('registerTransactionV2-Wire-Format', () {
     test('sendet registerJson mit clientID', () async {
       nativeAnswer = (call) => jsonEncode({
