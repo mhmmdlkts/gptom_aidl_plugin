@@ -56,6 +56,16 @@ zurück), z. B. `meineapp`:
 
 3. Beim `bindService` dieses Scheme übergeben (`uriSchemeIOS: 'meineapp'`).
 
+4. Den Redirect-Listener schon beim App-Start registrieren (`initState`):
+
+```dart
+GptomAidlPlugin().listenIOS('meineapp');
+```
+
+Beendet iOS die App, während GP tom im Vordergrund ist, kommt der Redirect
+beim Kaltstart an. Lauscht dann niemand, ist die Zahlung für die Kasse
+spurlos verschwunden – siehe [Offene Zahlungen nach einem Kaltstart](#offene-zahlungen-nach-einem-kaltstart).
+
 ## Verwendung
 
 ### Verkauf (Sale)
@@ -81,6 +91,8 @@ final result = await plugin.sell(
   transactionIdAndroid: transactionId,
   amountCents: 1250, // 12,50 EUR
   transactionMethode: TransactionMethode.card,
+  referenz: 'RE-2026-001', // eigene Kennung, max. 20 Zeichen
+  timeout: const Duration(minutes: 4),
   tipAmountCents: 100,
   preferableReceiptType: PreferableReceiptType.email,
   clientInfo: {
@@ -89,15 +101,68 @@ final result = await plugin.sell(
   },
 );
 
-if (result.result == 0) {
+if (result.result == GptomResultCode.success) {
   // Erfolgreich – result.approvedCode, result.cardNumber (maskiert), ...
+} else if (GptomResultCode.istUnklar(result.result)) {
+  // Die Karte KANN belastet sein: nachfragen, niemals wiederholen.
+} else if (GptomResultCode.istOhneBelastung(result.result)) {
+  // Sicher nichts abgebucht (nicht geöffnet / abgebrochen) – wiederholbar.
 } else {
-  // result.error?.errorMessage liefert eine deutsche Beschreibung
+  // Ablehnung des Terminals; result.error?.errorMessage beschreibt sie.
 }
 ```
 
 `clientInfo` nimmt die flachen Keys `email`/`phone` entgegen; das Plugin
 wandelt sie in die von GP tom erwartete `contact`-Struktur um.
+
+`referenz` ist die eigene Kennung der Zahlung (z. B. die Rechnungsnummer,
+höchstens 20 Zeichen). Auf iOS ordnet das Plugin den Redirect darüber der
+richtigen Zahlung zu; ohne Angabe wird eine erzeugt
+(`GptomAidlPlugin.neueReferenz()`).
+
+`timeout` begrenzt das Warten auf beiden Plattformen (iOS: Redirect,
+Standard 3 Minuten; Android: nativer Wächter auf `requestTransactionV2`,
+Standard 240 Sekunden). Läuft die Frist ab, kommt `-1003` – die Karte kann
+dann belastet sein.
+
+### Ergebnis einordnen
+
+Nach einer Kartenzahlung gibt es drei Lager, und nur eines davon darf
+wiederholt werden:
+
+| | Codes | Was die App tun muss |
+|---|---|---|
+| Erfolg | `0` | Beleg schreiben |
+| Unklar (`GptomResultCode.istUnklar`) | `-1001`, `-1003`, `-1004`, `-1005` | Nachfragen (Android: `stateRequestAndroid`/`inquireTransactionAndroid`, iOS: `pendingRedirect`), **nie** neu belasten |
+| Sicher ohne Belastung (`istOhneBelastung`) | `-1002`, `-1006` | Gefahrlos wiederholbar |
+| Ablehnung | `-1` … `-9` | Grund anzeigen, wiederholbar |
+
+### Späte Antwort nach Zeitablauf (Android)
+
+Antwortet GP tom erst nach dem Wächter-Timeout, ist der Aufruf längst mit
+`-1003` beantwortet. Das echte Ergebnis geht dann über einen eigenen Strom:
+
+```dart
+plugin.lateTransactionResultStream.listen((result) {
+  // result.transactionId / result.result – nachträglich auflösen
+});
+```
+
+### Offene Zahlungen nach einem Kaltstart
+
+Ein Redirect, für den es keinen wartenden Aufruf gab (Kaltstart oder ein
+verspäteter Redirect der Vorzahlung), geht in einen Puffer statt verloren:
+
+```dart
+final offen = plugin.pendingRedirect(originReferenceNum: 'RE-2026-001');
+if (offen != null) {
+  final ergebnis = offen.asSellResult();
+  // ergebnis.result, ergebnis.transactionId, offen.status
+}
+```
+
+Ohne `originReferenceNum` kommt der älteste Eintrag; `plugin.pendingRedirects`
+zeigt alle, ohne sie zu entfernen.
 
 ### Status & Details (nur Android)
 
@@ -182,8 +247,15 @@ Zusätzliche Plugin-interne Codes (nur clientseitig, kommen nicht von GP tom):
 |---|---|
 | -1001 | Antwort fehlte oder war nicht parsebar |
 | -1002 | GP tom App konnte nicht geöffnet werden (iOS) |
-| -1003 | Kein Redirect erhalten / Timeout (iOS) |
-| -1004 | Redirect ohne Receipt (iOS) |
+| -1003 | Keine Antwort binnen der Frist (iOS: kein Redirect, Android: Wächter) |
+| -1004 | Redirect ohne Receipt und ohne Erfolgs-Status (iOS) |
+| -1005 | Beleg im Redirect nicht lesbar (iOS) |
+| -1006 | Abbruch durch Kassier oder Kunde (iOS, `TASK_STATUS=CANCELED`) |
+
+Statt der Zahlen die Konstanten aus `GptomResultCode` verwenden; die
+Fehlerkennung in `result.error?.errorCode` steht in `GptomErrorCode`
+(`TIMEOUT`, `CANNOT_OPEN`, `NO_RECEIPT`, `PARSE_ERROR`, `CANCELLED`,
+`DECLINED`).
 
 ## Testen in der eigenen App (ohne Gerät)
 

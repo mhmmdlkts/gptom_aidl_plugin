@@ -1,3 +1,71 @@
+## 0.2.3
+
+* **Neu (Android, hängende Zahlung):** `requestTransactionV2` hat jetzt einen
+  Wächter. Antwortet GP tom nicht binnen der Frist (Standard 240 Sekunden,
+  über `sell(timeout: …)` einstellbar), kommt ein `RequestResult` mit
+  `result: -1003` (`GptomResultCode.timeout`) und
+  `error.errorCode == 'TIMEOUT'`. Bisher wartete der Aufruf unbegrenzt – wurde
+  die GP-tom-App weggewischt oder vom System beendet, stand die Kasse fest.
+  Der Code ist derselbe wie auf iOS, die App braucht nur einen Weg.
+* **Neu:** `lateTransactionResultStream` – trifft die GP-tom-Antwort erst nach
+  dem Wächter-Timeout ein, darf sie den MethodChannel nicht mehr beantworten;
+  sie kommt stattdessen als Ereignis (`onLateTransactionResult`) nach Dart,
+  damit die App einen unklaren Ausgang nachträglich auflösen kann.
+* **Fix (iOS, Zahlungsverlust):** Die Ausgänge sind jetzt unterscheidbar
+  statt alle "irgendwie fehlgeschlagen": `-1002` GP tom ließ sich nicht
+  öffnen, `-1003` Zeitablauf/kein Redirect, `-1004` kein Beleg und kein
+  Erfolgs-Status, `-1005` Beleg nicht lesbar, `-1006` Abbruch durch Kassier
+  oder Kunde (`TASK_STATUS=CANCELED`, Doku "Transaction Sales (iOS)"). Eine
+  Ablehnung des Terminals behält ihren GP-tom-Code. Jeder Ausgang trägt eine
+  Fehlerkennung in `error.errorCode`.
+* **Neu:** `GptomResultCode` und `GptomErrorCode` mit festen Konstanten –
+  in der App muss keine nackte Zahl stehen. `GptomResultCode.istUnklar(...)`
+  markiert die Ausgänge, bei denen die Karte belastet sein KANN (Nachfragen
+  statt Wiederholen), `istOhneBelastung(...)` die gefahrlos wiederholbaren.
+* **Fix (iOS):** Erfolg ohne `amsID` bleibt Erfolg; als Kennung dient dann
+  die eigene Referenz. Bisher fiel ein bezahlter Umsatz ohne `amsID` durch.
+* **Fix (iOS, Robustheit):** Das Beleg-Parsing wirft nicht mehr – kaputtes
+  JSON, `cardNumber` als Zahl oder ein ungültiges `date` führten bisher in
+  den Timeout-Zweig, eine belastete Karte wurde also als Zeitablauf
+  gemeldet. Ein unlesbarer Beleg ist jetzt `-1005`, ein ungültiges Datum
+  lässt nur die Datumsfelder leer.
+* **Neu (iOS, Kaltstart):** `listenIOS(uriScheme)` registriert den
+  Redirect-Listener beim App-Start (idempotent, gehört in `initState`).
+  Redirects ohne wartenden Aufruf gehen nicht mehr verloren, sondern in
+  einen Puffer und sind über `pendingRedirect({originReferenceNum})`
+  abholbar – mit Referenz, Status und `asSellResult()`/`asVoidResult()`.
+* **Neu (iOS, Zuordnung):** `sell(referenz: …)` setzt `originReferenceNum`
+  (ohne Angabe wird eine erzeugt) und nimmt nur einen Redirect an, dessen
+  Referenz passt; ein verspäteter Redirect der Vorzahlung beantwortet damit
+  nicht mehr die neue. GP tom gibt die Referenz laut Doku als
+  `referenceNumber` zurück; fehlt sie im Redirect, wird er wie bisher dem
+  wartenden Aufruf zugeschlagen.
+* **Fix (Beleg-Aufdruck):** `RequestResult.toMap()` liefert die Schlüssel
+  jetzt in beiden Schreibweisen (`transactionID`/`trasanctionID`,
+  `emvAppLabel`/`emvAppLable`, `transactionType`/`transacitonType`). Auf
+  Android kommen die Beleg-Daten aus der Inquire-Antwort mit den
+  Backend-Tippfehlern; auf iOS fehlten dem Aufdruck deshalb Kennung, EMV-Label
+  und Belegart.
+* Fix: `AppLinks` wird nicht mehr in einem `late final` gehalten – schlug der
+  erste Aufbau fehl, warf jeder weitere Versuch einen `LateInitializationError`
+  und die App lauschte dauerhaft nicht mehr.
+* Fix: Die Bind-Wächter (Payment-, Login-, Info-Service) werden nach einer
+  geglückten Verbindung entfernt, statt noch 5 Sekunden am Main-Handler zu
+  hängen.
+* `sell`/`voidSell`/`closeBatch`: `timeout` gilt für beide Plattformen,
+  `redirectTimeoutIOS` ist deprecated (bleibt gültig). `refund` kennt
+  `timeout` ebenfalls.
+
+## 0.2.2
+
+* **Fix (iOS, Zahlungsverlust):** Der Standard-Timeout für den Redirect aus
+  GP tom lag bei 60 Sekunden. Eine Kartenzahlung dauert im Feld im Mittel
+  rund 15 Sekunden, mit Kartensuche und PIN-Eingabe aber auch über zwei
+  Minuten – der Timeout schnitt laufende Zahlungen ab und meldete -1003,
+  während GP tom die Zahlung zu Ende führte: Die Karte war belastet, die
+  Kasse erfuhr davon nichts. Der Standard liegt jetzt bei 3 Minuten
+  (Kassenschnitt unverändert 15 Sekunden).
+
 ## 0.2.1
 
 * **Fix (iOS, Zahlungsverlust):** Ein erfolgreicher Redirect ohne `receipt`
