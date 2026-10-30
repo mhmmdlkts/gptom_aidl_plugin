@@ -70,5 +70,29 @@ void main() {
       expect(i.loginState, GptomLoginState.loggedOut);
       expect(i.tid, isNull);
     });
+
+    test('unerwartete Typen: Zahlen als Text, Wahrheitswerte als Text', () {
+      final i = GpTomInfo.fromIosAppStatus({
+        'appVersion': 180,
+        'userInfo': {
+          'tid': 12345678,
+          'mid': 987654321,
+          'clientId': null,
+          'tipEnabled': 'true',
+          'printerAvailable': 'false',
+          'manualTransactionRestricted': 'vielleicht',
+          'merchantLocation': 'Wien',
+        },
+      });
+      expect(i.loginState, GptomLoginState.loggedIn);
+      expect(i.appVersion, '180');
+      expect(i.tid, '12345678');
+      expect(i.mid, '987654321');
+      expect(i.clientId, isNull);
+      expect(i.tipEnabled, isTrue);
+      expect(i.printerAvailable, isFalse);
+      expect(i.manualTransactionRestricted, isNull);
+      expect(i.merchantLocationEntity, isNull);
+    });
   });
 }

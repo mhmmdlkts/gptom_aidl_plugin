@@ -235,6 +235,38 @@ void main() {
           (await GptomIosAccount.status()).fehler, GptomLoginOutcome.cancelled);
     });
 
+    test('status ERROR userNotLoggedIn: abgemeldet, kein Fehler', () async {
+      gpTom(antwort: (a) =>
+          antwortAuf(a, {'status': 'ERROR', 'error': 'userNotLoggedIn'}));
+      final s = await GptomIosAccount.status();
+      expect(s.fehler, isNull);
+      expect(s.info!.loginState, GptomLoginState.loggedOut);
+      expect(s.info!.isLoggedIn, isFalse);
+    });
+
+    test('status ERROR networkError: offline, sonst failed', () async {
+      gpTom(antwort: (a) =>
+          antwortAuf(a, {'status': 'ERROR', 'error': 'networkError'}));
+      final offline = await GptomIosAccount.status();
+      expect(offline.info, isNull);
+      expect(offline.fehler, GptomLoginOutcome.offline);
+
+      gpTom(antwort: (a) => antwortAuf(a, {'status': 'ERROR', 'error': 'failed'}));
+      expect((await GptomIosAccount.status()).fehler, GptomLoginOutcome.failed);
+      gpTom(antwort: (a) => antwortAuf(a, {'status': 'ERROR'}));
+      expect((await GptomIosAccount.status()).fehler, GptomLoginOutcome.failed);
+    });
+
+    test('status mit numerischer TID im appStatus', () async {
+      gpTom(antwort: (a) => antwortAuf(a, {
+            'status': 'COMPLETED',
+            'appStatus': '{"userInfo":{"tid":12345678}}',
+          }));
+      final s = await GptomIosAccount.status();
+      expect(s.fehler, isNull);
+      expect(s.info!.tid, '12345678');
+    });
+
     test('status ohne Antwort: timeout', () async {
       gpTom();
       final s = await GptomIosAccount.status(

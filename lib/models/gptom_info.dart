@@ -79,27 +79,48 @@ class GpTomInfo {
 
   /// iOS: aus `appStatus` der Antwort auf `gptom://status`. Fehlt `userInfo`,
   /// ist GP tom abgemeldet.
+  ///
+  /// Fremd-Input, deshalb nachsichtig gelesen: Texte über `toString()` (eine
+  /// TID als Zahl wird `'12345678'`), Wahrheitswerte als `true`/`false` oder
+  /// `'true'`/`'false'`, sonst `null`. Ein unerwarteter Typ macht so nie den
+  /// ganzen Status unlesbar.
   factory GpTomInfo.fromIosAppStatus(Map<String, dynamic> appStatus) {
     final u = appStatus['userInfo'];
     final user = u is Map ? Map<String, dynamic>.from(u) : null;
     final ort = user?['merchantLocation'];
     return GpTomInfo(
-      appVersion: appStatus['appVersion'] as String?,
+      appVersion: _text(appStatus['appVersion']),
       isLoggedIn: user != null,
       loginState:
           user != null ? GptomLoginState.loggedIn : GptomLoginState.loggedOut,
-      tid: user?['tid'] as String?,
-      mid: user?['mid'] as String?,
-      clientId: user?['clientId'] as String?,
-      businessId: user?['businessId'] as String?,
-      email: user?['email'] as String?,
-      vat: user?['vatId'] as String?,
-      tipEnabled: user?['tipEnabled'] as bool?,
-      printerAvailable: user?['printerAvailable'] as bool?,
-      manualTransactionRestricted: user?['manualTransactionRestricted'] as bool?,
+      tid: _text(user?['tid']),
+      mid: _text(user?['mid']),
+      clientId: _text(user?['clientId']),
+      businessId: _text(user?['businessId']),
+      email: _text(user?['email']),
+      vat: _text(user?['vatId']),
+      tipEnabled: _wahrheitswert(user?['tipEnabled']),
+      printerAvailable: _wahrheitswert(user?['printerAvailable']),
+      manualTransactionRestricted:
+          _wahrheitswert(user?['manualTransactionRestricted']),
       merchantLocationEntity: ort is Map ? Map<String, dynamic>.from(ort) : null,
       raw: appStatus,
     );
+  }
+
+  static String? _text(Object? wert) => wert?.toString();
+
+  static bool? _wahrheitswert(Object? wert) {
+    if (wert is bool) return wert;
+    if (wert is String) {
+      switch (wert.trim().toLowerCase()) {
+        case 'true':
+          return true;
+        case 'false':
+          return false;
+      }
+    }
+    return null;
   }
 
   factory GpTomInfo.fromJson(String jsonStr) {

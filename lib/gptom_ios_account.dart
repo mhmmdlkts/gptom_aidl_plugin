@@ -177,7 +177,13 @@ class GptomIosAccount {
       );
 
   /// Fragt den Zustand von GP tom ab. Bei Erfolg [info], sonst [fehler]
-  /// (`cannotOpen`, `timeout`, `cancelled` oder `unknown`).
+  /// (`cannotOpen`, `timeout`, `cancelled`, `offline`, `failed` oder
+  /// `unknown`).
+  ///
+  /// `status=ERROR` mit `error=userNotLoggedIn` ist kein Fehler, sondern der
+  /// Zustand „abgemeldet“ – sonst würde der Morgen-Check nie anmelden.
+  /// `networkError` ergibt `offline`, jeder andere `ERROR` `failed`.
+  /// `COMPLETED` ohne lesbaren `appStatus` bleibt `unknown`.
   static Future<({GpTomInfo? info, GptomLoginOutcome? fehler})> status({
     Duration? timeout,
   }) async {
@@ -198,6 +204,22 @@ class GptomIosAccount {
     final st = redirect.queryParameters['status']?.toUpperCase();
     if (st == 'CANCELLED' || st == 'CANCELED') {
       return (info: null, fehler: GptomLoginOutcome.cancelled);
+    }
+    if (st == 'ERROR') {
+      switch (redirect.queryParameters['error']) {
+        case 'userNotLoggedIn':
+          return (
+            info: GpTomInfo(
+              loginState: GptomLoginState.loggedOut,
+              isLoggedIn: false,
+            ),
+            fehler: null,
+          );
+        case 'networkError':
+          return (info: null, fehler: GptomLoginOutcome.offline);
+        default:
+          return (info: null, fehler: GptomLoginOutcome.failed);
+      }
     }
     final info = infoFromStatusRedirect(redirect);
     if (info == null) return (info: null, fehler: GptomLoginOutcome.unknown);

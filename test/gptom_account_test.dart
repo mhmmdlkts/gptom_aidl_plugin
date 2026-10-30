@@ -522,6 +522,32 @@ void main() {
       expect(fake.bindLoginServiceCalls, 0);
     });
 
+    test('iOS: Status ERROR userNotLoggedIn → ensureLoggedIn meldet an',
+        () async {
+      gpTom((anfrage) => anfrage.host == 'status'
+          ? {'status': 'ERROR', 'error': 'userNotLoggedIn'}
+          : {'status': 'COMPLETED'});
+      final r = await GptomAccount(platform: fake, isIOS: true).ensureLoggedIn(
+        credentials: () => zugang,
+        expectedTerminalId: '12345678',
+        timeout: kurz,
+      );
+      expect(r.outcome, GptomLoginOutcome.loggedIn);
+      expect(r.info!.loginState, GptomLoginState.loggedOut);
+      expect(geoeffnet.map((u) => u.host), ['status', 'login']);
+    });
+
+    test('iOS: Status ERROR networkError → ensureLoggedIn offline ohne Login',
+        () async {
+      gpTom((_) => {'status': 'ERROR', 'error': 'networkError'});
+      final r = await GptomAccount(platform: fake, isIOS: true).ensureLoggedIn(
+        credentials: () => throw StateError('darf nicht gerufen werden'),
+        timeout: kurz,
+      );
+      expect(r.outcome, GptomLoginOutcome.offline);
+      expect(geoeffnet.map((u) => u.host), ['status']);
+    });
+
     test('iOS: ensureLoggedIn bereits angemeldet → alreadyLoggedIn', () async {
       gpTom((_) => {
             'status': 'COMPLETED',
