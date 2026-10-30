@@ -302,4 +302,53 @@ void main() {
       );
     });
   });
+
+  group('buildRefundUri', () {
+    test('trägt Betrag, Telefon kodiert und requestID', () {
+      final uri = GptomAidlPluginIOS.buildRefundUri(
+        amountCents: 1000,
+        redirectUrl: 'myapp://redirect',
+        clientPhone: '+43 660 1234567',
+        requestId: '0123456789abcdef0123456789abcdef',
+      );
+      expect(uri.scheme, 'gptom');
+      expect(uri.host, 'transaction');
+      expect(uri.path, '/refund');
+      expect(uri.queryParameters['amount'], '1000');
+      expect(uri.queryParameters['clientPhone'], '+43 660 1234567');
+      expect(uri.queryParameters['requestID'], '0123456789abcdef0123456789abcdef');
+      expect(uri.query, contains('clientPhone=%2B43+660+1234567'));
+    });
+
+    test('lässt optionale Felder weg', () {
+      final uri = GptomAidlPluginIOS.buildRefundUri(
+        amountCents: 50,
+        redirectUrl: 'myapp://redirect',
+      );
+      expect(uri.queryParameters.containsKey('requestID'), isFalse);
+      expect(uri.queryParameters.containsKey('originReferenceNum'), isFalse);
+    });
+  });
+
+  group('buildTransactionDetailUri', () {
+    test('baut die URL mit requestID', () {
+      final uri = GptomAidlPluginIOS.buildTransactionDetailUri(
+        requestId: '0123456789abcdef0123456789abcdef',
+        redirectUrl: 'myapp://redirect/abc',
+      );
+      expect(uri.host, 'transaction');
+      expect(uri.path, '/detail');
+      expect(uri.queryParameters['requestID'], '0123456789abcdef0123456789abcdef');
+      expect(uri.queryParameters['redirectUrl'], 'myapp://redirect/abc');
+      expect(uri.queryParameters.containsKey('amsID'), isFalse);
+    });
+
+    test('ohne amsID und requestId wirft ArgumentError', () {
+      expect(
+        () => GptomAidlPluginIOS.buildTransactionDetailUri(
+            redirectUrl: 'myapp://redirect'),
+        throwsArgumentError,
+      );
+    });
+  });
 }

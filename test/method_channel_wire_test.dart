@@ -388,4 +388,54 @@ void main() {
       expect(r.resultCode, -1003);
     });
   });
+
+  group('Referenz, Zahlungsart und Rückerstattung (Wire)', () {
+    test('sell schickt originReferenceNum und paymentMethod', () async {
+      nativeAnswer = (call) => jsonEncode({'result': 0});
+      await GptomAidlPlugin().sell(
+        transactionIdAndroid: 'tx-1',
+        amountCents: 100,
+        transactionMethode: TransactionMethode.card,
+        referenz: 'RE-2026-001',
+        paymentMethod: GptomPaymentMethod.card,
+      );
+      final json = sentRequestJson();
+      expect(json['originReferenceNum'], 'RE-2026-001');
+      expect(json['paymentMethod'], 'CARD');
+    });
+
+    test('sell ohne referenz und paymentMethod lässt beide Keys weg', () async {
+      nativeAnswer = (call) => jsonEncode({'result': 0});
+      await GptomAidlPlugin().sell(
+        transactionIdAndroid: 'tx-1',
+        amountCents: 100,
+        transactionMethode: TransactionMethode.card,
+      );
+      final json = sentRequestJson();
+      expect(json.containsKey('originReferenceNum'), isFalse);
+      expect(json.containsKey('paymentMethod'), isFalse);
+    });
+
+    test('register schickt paymentMethod', () async {
+      nativeAnswer = (call) => jsonEncode({'resultCode': 0, 'transactionId': 't'});
+      await GptomAidlPlugin()
+          .registerTransactionV2Android(paymentMethod: GptomPaymentMethod.cash);
+      final call = nativeCalls.singleWhere((c) => c.method == 'registerTransactionV2');
+      final args = Map<String, dynamic>.from(call.arguments as Map);
+      expect(jsonDecode(args['registerJson'] as String)['paymentMethod'], 'CASH');
+    });
+
+    test('refund ohne originTransactionId lässt den Key weg', () async {
+      nativeAnswer = (call) => jsonEncode({'result': 0});
+      await GptomAidlPlugin().refund(
+        transactionIdAndroid: 'tx-1',
+        amountCents: 100,
+        referenz: 'RE-1',
+      );
+      final json = sentRequestJson();
+      expect(json.containsKey('originTransactionID'), isFalse);
+      expect(json['transactionType'], 3);
+      expect(json['originReferenceNum'], 'RE-1');
+    });
+  });
 }

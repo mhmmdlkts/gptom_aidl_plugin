@@ -85,6 +85,18 @@ class GptomPendingRedirect {
     );
   }
 
+  /// Liest den Redirect als Ergebnis einer Rückerstattung. Unbestätigt:
+  /// [GptomResultCode.unverified], nie Erfolg.
+  RequestResult asRefundResult({bool printByPaymentApp = false}) {
+    if (!isVerified) return _unbestaetigt();
+    return GptomAidlPluginIOS.requestResultFromRefundRedirect(
+      uri,
+      printByPaymentApp: printByPaymentApp,
+      originReferenceNum: originReferenceNum,
+      requestId: requestId,
+    );
+  }
+
   /// Der Inhalt des Redirects wird gar nicht erst ausgewertet: Ein
   /// gefälschter Link mit erratbarer Rechnungsnummer darf nichts als bezahlt
   /// verbuchen. Bewusst ohne `requestId` – das Token im Pfad hat der
@@ -682,10 +694,12 @@ class GptomAidlPluginIOS {
   static RequestResult _requestResultFromReceipt(
     Uri redirectedUri, {
     required bool printByPaymentApp,
-    required bool isCancel,
+    required TransactionType art,
     String? originReferenceNum,
     String? requestId,
   }) {
+    // Beim Storno ist die "eigene" Kennung die transactionID, sonst die amsID.
+    final isCancel = art == TransactionType.voidSell;
     final query = redirectedUri.queryParameters;
     final receiptRaw = query['receipt'];
     final status = query['status'];
@@ -705,8 +719,7 @@ class GptomAidlPluginIOS {
           transactionId: query['amsID'] ?? originReferenceNum,
           externalTransactionID: query['transactionID'],
           printByPaymentApp: printByPaymentApp,
-          transactionType:
-              isCancel ? TransactionType.voidSell : TransactionType.sell,
+          transactionType: art,
           requestId: requestId,
         );
       }
@@ -828,7 +841,7 @@ class GptomAidlPluginIOS {
       cardDataEntry: _stringFromReceipt(receipt['cardEntryMode']),
       amsID: _stringFromReceipt(receipt['amsID']),
       time: time,
-      transactionType: isCancel ? TransactionType.voidSell : TransactionType.sell,
+      transactionType: art,
       requestId: requestId,
       error: fehler,
     );
@@ -845,7 +858,7 @@ class GptomAidlPluginIOS {
     return _requestResultFromReceipt(
       redirectedUri,
       printByPaymentApp: printByPaymentApp,
-      isCancel: false,
+      art: TransactionType.sell,
       originReferenceNum: originReferenceNum,
       requestId: requestId,
     );
@@ -862,8 +875,184 @@ class GptomAidlPluginIOS {
     return _requestResultFromReceipt(
       redirectedUri,
       printByPaymentApp: printByPaymentApp,
-      isCancel: true,
+      art: TransactionType.voidSell,
       originReferenceNum: originReferenceNum,
+      requestId: requestId,
+    );
+  }
+
+  /// Parst das Ergebnis aus dem Redirect von gptom://transaction/refund.
+  @visibleForTesting
+  static RequestResult requestResultFromRefundRedirect(
+    Uri redirectedUri, {
+    required bool printByPaymentApp,
+    String? originReferenceNum,
+    String? requestId,
+  }) {
+    return _requestResultFromReceipt(
+      redirectedUri,
+      printByPaymentApp: printByPaymentApp,
+      art: TransactionType.refund,
+      originReferenceNum: originReferenceNum,
+      requestId: requestId,
+    );
+  }
+
+  /// Baut die URL für gptom://transaction/refund.
+  @visibleForTesting
+  static Uri buildRefundUri({
+    required int amountCents,
+    required String redirectUrl,
+    String? originReferenceNum,
+    String? clientID,
+    bool printByPaymentApp = true,
+    PreferableReceiptType? preferableReceiptType,
+    String? clientPhone,
+    String? clientEmail,
+    String? requestId,
+  }) {
+    return Uri(
+      scheme: 'gptom',
+      host: 'transaction',
+      path: 'refund',
+      queryParameters: {
+        'amount': amountCents.toString(),
+        if (clientID != null) 'clientID': clientID,
+        if (originReferenceNum != null) 'originReferenceNum': originReferenceNum,
+        if (requestId != null) 'requestID': requestId,
+        'redirectUrl': redirectUrl,
+        'printByPaymentApp': printByPaymentApp.toString(),
+        if (preferableReceiptType != null) 'preferableReceiptType': preferableReceiptType.iosKey,
+        if (clientPhone != null) 'clientPhone': clientPhone,
+        if (clientEmail != null) 'clientEmail': clientEmail,
+      },
+    );
+  }
+
+  /// Baut die URL für gptom://transaction/detail. Mindestens [amsID] oder
+  /// [requestId] muss gesetzt sein, sonst [ArgumentError].
+  @visibleForTesting
+  static Uri buildTransactionDetailUri({
+    String? amsID,
+    String? requestId,
+    String? clientID,
+    required String redirectUrl,
+  }) {
+    if (amsID == null && requestId == null) {
+      throw ArgumentError('amsID oder requestId angeben.');
+    }
+    return Uri(
+      scheme: 'gptom',
+      host: 'transaction',
+      path: 'detail',
+      queryParameters: {
+        if (amsID != null) 'amsID': amsID,
+        if (requestId != null) 'requestID': requestId,
+        if (clientID != null) 'clientID': clientID,
+        'redirectUrl': redirectUrl,
+      },
+    );
+  }
+
+  /// Rückerstattung über `gptom://transaction/refund`. [requestId] wie bei
+  /// [createTransactionIOS]; das Ergebnis trägt sie immer.
+  static Future<RequestResult> refundTransactionIOS({
+    required int amountCents,
+    String? originReferenceNum,
+    String? clientID,
+    bool printByPaymentApp = true,
+    PreferableReceiptType? preferableReceiptType,
+    String? clientPhone,
+    String? clientEmail,
+    String? requestId,
+    Duration? redirectTimeout,
+  }) async {
+    final vorgangsId = _vorgangsIdPruefen(requestId);
+    if (!isActive) {
+      return RequestResult(result: GptomResultCode.exception, requestId: vorgangsId);
+    }
+    final sendeRequestId = GptomSecurityConfig.current.sendRequestIdIOS;
+
+    final redirectedUri = await _oeffnenUndWarten(
+      (redirectUrl) => buildRefundUri(
+        amountCents: amountCents,
+        redirectUrl: redirectUrl,
+        originReferenceNum: originReferenceNum,
+        clientID: clientID,
+        printByPaymentApp: printByPaymentApp,
+        preferableReceiptType: preferableReceiptType,
+        clientPhone: clientPhone,
+        clientEmail: clientEmail,
+        requestId: sendeRequestId ? vorgangsId : null,
+      ),
+      vorgangsId: vorgangsId,
+      originReferenceNum: originReferenceNum,
+      timeout: redirectTimeout ?? defaultTransactionRedirectTimeout,
+    );
+    if (redirectedUri is RequestResult) return redirectedUri;
+
+    return requestResultFromRefundRedirect(
+      redirectedUri as Uri,
+      printByPaymentApp: printByPaymentApp,
+      originReferenceNum: originReferenceNum,
+      requestId: vorgangsId,
+    );
+  }
+
+  /// Standard-Timeout der Belegabfrage (kein Kundenvorgang).
+  static const Duration defaultTransactionDetailTimeout = Duration(seconds: 30);
+
+  /// Fragt über `gptom://transaction/detail` den Beleg einer Transaktion ab,
+  /// per [amsId] und/oder [requestId] (die vor dem Aufruf gespeicherte
+  /// Vorgangskennung). Die Abfrage selbst läuft unter einem eigenen,
+  /// frischen Token. Fehlen beide, wirft die Methode [ArgumentError].
+  ///
+  /// Das Ergebnis liest den Beleg wie beim Verkauf. Sein `requestId` ist die
+  /// nachgeschlagene Kennung (der eigene Wert der App), sonst `null`.
+  static Future<RequestResult> transactionDetailIOS({
+    String? amsId,
+    String? requestId,
+    String? clientId,
+    Duration? timeout,
+  }) async {
+    if (requestId != null) _vorgangsIdPruefen(requestId);
+    if (amsId == null && requestId == null) {
+      throw ArgumentError('amsId oder requestId angeben.');
+    }
+    if (!isActive) {
+      return RequestResult(result: GptomResultCode.exception, requestId: requestId);
+    }
+    final sendeRequestId = GptomSecurityConfig.current.sendRequestIdIOS;
+
+    final antwort = await roundtrip(
+      (redirectUrl) => buildTransactionDetailUri(
+        amsID: amsId,
+        requestId: sendeRequestId ? requestId : null,
+        clientID: clientId,
+        redirectUrl: redirectUrl,
+      ),
+      timeout: timeout ?? defaultTransactionDetailTimeout,
+    );
+    final redirect = antwort.redirect;
+    if (redirect == null) {
+      if (antwort.cannotOpen) {
+        return _pluginFehler(
+          GptomResultCode.cannotOpen,
+          GptomErrorCode.cannotOpen,
+          'Konnte GP tom nicht öffnen',
+          requestId: requestId,
+        );
+      }
+      return _pluginFehler(
+        GptomResultCode.timeout,
+        GptomErrorCode.timeout,
+        'Kein Redirect erhalten oder Timeout',
+        requestId: requestId,
+      );
+    }
+    return requestResultFromCreateRedirect(
+      redirect,
+      printByPaymentApp: false,
       requestId: requestId,
     );
   }

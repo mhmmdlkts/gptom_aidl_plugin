@@ -4,6 +4,7 @@ import 'dart:convert';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:gptom_aidl_plugin/enums/cancel_mode.dart';
 import 'package:gptom_aidl_plugin/enums/transaction_methode.dart';
+import 'package:gptom_aidl_plugin/enums/transaction_type.dart';
 import 'package:gptom_aidl_plugin/gptom_aidl_plugin.dart';
 import 'package:gptom_aidl_plugin/gptom_aidl_plugin_ios.dart';
 import 'package:gptom_aidl_plugin/gptom_security.dart';
@@ -442,6 +443,86 @@ void main() {
         throwsException,
       );
       expect(GptomAidlPluginIOS.pendingRedirects.single.isVerified, isFalse);
+    });
+  });
+
+  group('Rückerstattung und Belegabfrage', () {
+    test('Rückerstattung liest den Beleg als refund und trägt die requestId', () async {
+      gpTom(antwort: (a) => antwortAuf(a, {
+            'status': 'COMPLETED',
+            'receipt': jsonEncode({'result': 0, 'amount': '10,00', 'amsID': 'ams-9'}),
+          }));
+
+      final result = await GptomAidlPlugin().refund(
+        amountCents: 1000,
+        referenz: 'RE-1',
+        timeout: const Duration(milliseconds: 200),
+      );
+
+      expect(gerufen!.path, '/refund');
+      expect(result.result, 0);
+      expect(result.amountCents, 1000);
+      expect(result.transactionType, TransactionType.refund);
+      expect(result.requestId, matches(hex32));
+      expect(gerufen!.queryParameters['requestID'], result.requestId);
+      expect(tokenAus(gerufen!), result.requestId);
+    });
+
+    test('Rückerstattung ohne Redirect liefert Timeout mit requestId', () async {
+      gpTom();
+      final id = GptomAidlPlugin.neueVorgangsId();
+      final result = await GptomAidlPlugin().refund(
+        amountCents: 1000,
+        requestId: id,
+        timeout: const Duration(milliseconds: 30),
+      );
+      expect(result.result, -1003);
+      expect(result.requestId, id);
+    });
+
+    test('Rückerstattung mit ungültiger requestId wirft ArgumentError', () {
+      gpTom();
+      expect(
+        () => GptomAidlPlugin().refund(amountCents: 1000, requestId: 'ABC'),
+        throwsArgumentError,
+      );
+    });
+
+    test('unbestätigter Redirect ergibt als Rückerstattung -1007 ohne requestId', () {
+      final redirect = GptomPendingRedirect(
+        Uri.parse('meineapp://redirect/${'a' * 32}?status=COMPLETED'),
+        DateTime.now(),
+        isVerified: false,
+      );
+      final r = redirect.asRefundResult();
+      expect(r.result, -1007);
+      expect(r.requestId, isNull);
+    });
+
+    test('Belegabfrage liest den Beleg mit eigenem Token', () async {
+      gpTom(antwort: (a) => antwortAuf(a, {
+            'status': 'COMPLETED',
+            'receipt': jsonEncode({'result': 0, 'amount': '4,35', 'amsID': 'ams-2'}),
+          }));
+      final gesucht = GptomAidlPlugin.neueVorgangsId();
+
+      final result = await GptomAidlPlugin().transactionDetailIOS(
+        requestId: gesucht,
+        timeout: const Duration(milliseconds: 200),
+      );
+
+      expect(gerufen!.path, '/detail');
+      expect(gerufen!.queryParameters['requestID'], gesucht);
+      expect(tokenAus(gerufen!), matches(hex32));
+      expect(tokenAus(gerufen!), isNot(gesucht));
+      expect(result.result, 0);
+      expect(result.amountCents, 435);
+      expect(result.requestId, gesucht);
+    });
+
+    test('Belegabfrage ohne amsId und requestId wirft ArgumentError', () {
+      gpTom();
+      expect(() => GptomAidlPlugin().transactionDetailIOS(), throwsArgumentError);
     });
   });
 }

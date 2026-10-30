@@ -11,12 +11,14 @@ import 'package:gptom_aidl_plugin/models/request_result.dart';
 import 'package:gptom_aidl_plugin/models/state_result.dart';
 
 import 'enums/cancel_mode.dart';
+import 'enums/payment_method.dart';
 import 'enums/preferable_receipt_type.dart';
 import 'enums/transaction_methode.dart';
 import 'gptom_aidl_plugin_platform_interface.dart';
 import 'gptom_result_code.dart';
 import 'models/register_result.dart';
 
+export 'enums/payment_method.dart';
 export 'gptom_aidl_plugin_ios.dart' show GptomPendingRedirect;
 export 'gptom_result_code.dart';
 
@@ -128,10 +130,15 @@ class GptomAidlPlugin {
   /// Registriert eine Transaktion und erhält eine transactionId.
   /// [clientId] (optional) muss zum angemeldeten Nutzer passen,
   /// andernfalls kann ein Fehler wie "ClientAPIDoesNotMatch" auftreten.
-  Future<RegisterResult> registerTransactionV2Android({String? clientId}) async {
+  /// [paymentMethod] (optional) legt die Zahlungsart fest.
+  Future<RegisterResult> registerTransactionV2Android({
+    String? clientId,
+    GptomPaymentMethod? paymentMethod,
+  }) async {
     // Baue ein Map, das später in JSON verwandelt wird:
     final params = <String, dynamic>{
       if (clientId != null) 'clientID': clientId,
+      if (paymentMethod != null) 'paymentMethod': paymentMethod.aidlKey,
       // ggf. weitere Felder
     };
     return GptomAidlPluginPlatform.instance.registerTransactionV2Android(params);
@@ -165,7 +172,10 @@ class GptomAidlPlugin {
     bool openGptomUI = true,
     PreferableReceiptType? preferableReceiptType,
     int? timeoutMs,
+    String? originReferenceNum,
+    GptomPaymentMethod? paymentMethod,
   }) async {
+    if (originReferenceNum != null) _requireReferenz(originReferenceNum);
     if (amountCents != null) _requireNonNegativeCents('amountCents', amountCents);
     if (tipAmountCents != null) _requireNonNegativeCents('tipAmountCents', tipAmountCents);
     final params = <String, dynamic>{
@@ -185,9 +195,24 @@ class GptomAidlPlugin {
       if (redirectInfo != null) 'redirectInfo': redirectInfo,
       if (clientInfo != null) 'clientInfo': normalizeClientInfo(clientInfo),
       if (preferableReceiptType != null) 'preferableReceiptType': preferableReceiptType.aidlKey,
+      if (originReferenceNum != null) 'originReferenceNum': originReferenceNum,
+      if (paymentMethod != null) 'paymentMethod': paymentMethod.aidlKey,
     };
     // Dann rufen wir das platform interface auf
     return GptomAidlPluginPlatform.instance.requestTransactionV2Android(params);
+  }
+
+  /// Referenz: höchstens 20 Zeichen, nur druckbares ASCII (0x20-0x7E). Die
+  /// Meldung nennt den Wert nicht.
+  static void _requireReferenz(String referenz) {
+    final erlaubt = referenz.length <= 20 &&
+        referenz.codeUnits.every((c) => c >= 0x20 && c <= 0x7E);
+    if (!erlaubt) {
+      throw ArgumentError(
+        'referenz: höchstens 20 Zeichen, nur ASCII ohne Umlaute',
+        'referenz',
+      );
+    }
   }
 
   static void _requirePositiveCents(String name, int value) {
@@ -263,9 +288,11 @@ class GptomAidlPlugin {
     @Deprecated('Ersetzt durch timeout (gilt für beide Plattformen)')
     Duration? redirectTimeoutIOS,
     String? requestId,
+    GptomPaymentMethod? paymentMethod,
   }) async {
     _requirePositiveCents('amountCents', amountCents);
     _requireNonNegativeCents('tipAmountCents', tipAmountCents);
+    if (referenz != null) _requireReferenz(referenz);
     final frist = timeout ?? redirectTimeoutIOS;
     if (GptomAidlPluginIOS.isActive) {
       return await GptomAidlPluginIOS.createTransactionIOS(
@@ -302,6 +329,8 @@ class GptomAidlPlugin {
       openGptomUI: openGptomUI,
       preferableReceiptType: preferableReceiptType,
       timeoutMs: frist?.inMilliseconds,
+      originReferenceNum: referenz,
+      paymentMethod: paymentMethod,
     );
   }
 
@@ -322,6 +351,7 @@ class GptomAidlPlugin {
     Duration? redirectTimeoutIOS,
     String? requestId,
   }) async {
+    if (referenz != null) _requireReferenz(referenz);
     final frist = timeout ?? redirectTimeoutIOS;
     if (GptomAidlPluginIOS.isActive) {
       return await GptomAidlPluginIOS.cancelTransactionIOS(
@@ -352,15 +382,20 @@ class GptomAidlPlugin {
       openGptomUI: openGptomUI,
       preferableReceiptType: preferableReceiptType,
       timeoutMs: frist?.inMilliseconds,
+      originReferenceNum: referenz,
     );
   }
 
-  /// Rückerstattung (REFUND, transactionType 3) einer abgeschlossenen
-  /// Transaktion. [amountCents] in Cent. Nur Android – auf iOS bietet das
-  /// GPTom-URL-Scheme dafür keinen Weg.
+  /// Rückerstattung (REFUND, transactionType 3). [amountCents] in Cent.
+  ///
+  /// Android: [originTransactionId] (optional) verweist auf die
+  /// ursprüngliche Transaktion und geht nur dann ins JSON. iOS: über
+  /// `gptom://transaction/refund`; [requestId] wie bei [sell], das Ergebnis
+  /// trägt sie immer. [referenz] ist die eigene Kennung (höchstens 20 Zeichen
+  /// ASCII).
   Future<RequestResult> refund({
     String? transactionIdAndroid,
-    required String originTransactionId,
+    String? originTransactionId,
     required int amountCents,
     String? clientId,
     bool printByPaymentApp = false,
@@ -369,12 +404,22 @@ class GptomAidlPlugin {
     bool openGptomUI = true,
     PreferableReceiptType? preferableReceiptType,
     Duration? timeout,
+    String? referenz,
+    String? requestId,
   }) async {
     _requirePositiveCents('amountCents', amountCents);
-    if (Platform.isIOS) {
-      throw PlatformException(
-        code: 'PlatformError',
-        message: 'refund is not supported on iOS',
+    if (referenz != null) _requireReferenz(referenz);
+    if (GptomAidlPluginIOS.isActive) {
+      return await GptomAidlPluginIOS.refundTransactionIOS(
+        amountCents: amountCents,
+        originReferenceNum: referenz,
+        clientID: clientId,
+        printByPaymentApp: printByPaymentApp,
+        preferableReceiptType: preferableReceiptType,
+        clientPhone: clientInfo?['phone'],
+        clientEmail: clientInfo?['email'],
+        requestId: requestId,
+        redirectTimeout: timeout,
       );
     }
     if (transactionIdAndroid == null) {
@@ -395,6 +440,32 @@ class GptomAidlPlugin {
       openGptomUI: openGptomUI,
       preferableReceiptType: preferableReceiptType,
       timeoutMs: timeout?.inMilliseconds,
+      originReferenceNum: referenz,
+    );
+  }
+
+  /// Belegabfrage (nur iOS, `gptom://transaction/detail`) per [amsId] und/oder
+  /// [requestId] – die vor dem Zahlungsaufruf gespeicherte Vorgangskennung.
+  /// Fehlen beide, wirft die Methode [ArgumentError]. Das Ergebnis trägt die
+  /// nachgeschlagene [requestId] (sonst `null`). Standard-Timeout 30 s.
+  /// Auf Android: [inquireTransactionAndroid].
+  Future<RequestResult> transactionDetailIOS({
+    String? amsId,
+    String? requestId,
+    String? clientId,
+    Duration? timeout,
+  }) async {
+    if (!GptomAidlPluginIOS.isActive) {
+      throw PlatformException(
+        code: 'PlatformError',
+        message: 'transactionDetailIOS gibt es nur auf iOS – auf Android inquireTransactionAndroid',
+      );
+    }
+    return GptomAidlPluginIOS.transactionDetailIOS(
+      amsId: amsId,
+      requestId: requestId,
+      clientId: clientId,
+      timeout: timeout,
     );
   }
 

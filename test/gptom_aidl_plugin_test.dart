@@ -298,4 +298,57 @@ void main() {
       expect(fake.lastRegisterParams!.containsKey('clientID'), isFalse);
     });
   });
+
+  group('Referenzprüfung und Belegabfrage', () {
+    test('Referenz mit 21 Zeichen wirft ArgumentError', () {
+      expect(
+        () => plugin.sell(
+          transactionIdAndroid: 'tx-1',
+          amountCents: 100,
+          transactionMethode: TransactionMethode.card,
+          referenz: 'x' * 21,
+        ),
+        throwsArgumentError,
+      );
+    });
+
+    test('Referenz mit Umlaut wirft ArgumentError ohne den Wert zu nennen', () {
+      expect(
+        () => plugin.voidSell(
+          transactionIdAndroid: 'tx-1',
+          originTransactionId: 'o',
+          cancelMode: CancelMode.last,
+          referenz: 'Müller-1',
+        ),
+        throwsA(isA<ArgumentError>()
+            .having((e) => e.toString(), 'text', isNot(contains('Müller')))),
+      );
+      expect(
+        () => plugin.refund(
+            transactionIdAndroid: 'tx-1', amountCents: 100, referenz: 'Müller-1'),
+        throwsArgumentError,
+      );
+    });
+
+    test('Referenz mit genau 20 Zeichen ist erlaubt', () async {
+      await plugin.sell(
+        transactionIdAndroid: 'tx-1',
+        amountCents: 100,
+        transactionMethode: TransactionMethode.card,
+        referenz: 'x' * 20,
+      );
+      expect(fake.lastRequestParams!['originReferenceNum'], 'x' * 20);
+    });
+
+    test('transactionDetailIOS wirft auf Android PlatformException', () {
+      expect(() => plugin.transactionDetailIOS(requestId: 'a' * 32),
+          throwsA(isA<PlatformException>()));
+    });
+
+    test('register gibt paymentMethod weiter', () async {
+      await plugin.registerTransactionV2Android(
+          paymentMethod: GptomPaymentMethod.accountPayment);
+      expect(fake.lastRegisterParams!['paymentMethod'], 'ACCOUNT_PAYMENT');
+    });
+  });
 }
