@@ -63,6 +63,8 @@ public class GptomAidlPluginTest {
     when(binding.getApplicationContext()).thenReturn(RuntimeEnvironment.getApplication());
     when(binding.getBinaryMessenger()).thenReturn(messenger);
     plugin.onAttachedToEngine(binding);
+    // GP-tom-Aufrufe sofort auf dem Testthread ausführen.
+    plugin.setExecutorsForTesting(Runnable::run, Runnable::run);
 
     result = mock(MethodChannel.Result.class);
   }

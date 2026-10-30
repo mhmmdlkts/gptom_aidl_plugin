@@ -94,6 +94,8 @@ public class GptomTrustTest {
     when(binding.getApplicationContext()).thenReturn(RuntimeEnvironment.getApplication());
     when(binding.getBinaryMessenger()).thenReturn(messenger);
     plugin.onAttachedToEngine(binding);
+    // GP-tom-Aufrufe sofort auf dem Testthread ausführen.
+    plugin.setExecutorsForTesting(Runnable::run, Runnable::run);
 
     result = mock(MethodChannel.Result.class);
   }
@@ -597,6 +599,34 @@ public class GptomTrustTest {
 
     verkaufMitGpTomUi();
 
+    assertNull(shadowOf(app()).getNextStartedActivity());
+  }
+
+  @Test
+  public void openGptomUI_nichtVertraut_keineZahlungGestartet() throws Exception {
+    installiereGpTom(PROD, ZERT_A);
+    gpTomStartActivity();
+    ISmartconnectService service = mock(ISmartconnectService.class);
+    IBinder binder = mock(IBinder.class);
+    when(binder.queryLocalInterface(anyString())).thenReturn(service);
+    shadowOf(app()).setComponentNameAndServiceForBindService(
+        new ComponentName(PROD, PAYMENT_SERVICE_CLASS), binder);
+
+    MethodChannel.Result bind = mock(MethodChannel.Result.class);
+    plugin.onMethodCall(
+        new MethodCall("bindService", bindArgs(false, Collections.singletonList(FP_A))), bind);
+    idleMainLooper();
+    verify(bind).success(true);
+
+    // Nach dem Bind durch eine App mit fremdem Schlüssel ersetzt.
+    installiereGpTom(PROD, ZERT_B);
+    verkaufMitGpTomUi();
+    idleMainLooper();
+
+    // Kein Bezahlvorgang in einer App, deren Oberfläche nicht geöffnet würde.
+    verify(service, never()).transactionRequestV2(anyString(), any());
+    verify(result).error(
+        "UNTRUSTED_APP", "GP tom nicht vertrauenswürdig – Zahlung nicht gestartet.", null);
     assertNull(shadowOf(app()).getNextStartedActivity());
   }
 

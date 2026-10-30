@@ -28,7 +28,12 @@ import java.util.List;
 import java.util.Map;
 import java.util.HashMap;
 import java.util.Set;
+import java.util.concurrent.Executor;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.function.Supplier;
 
 import io.flutter.embedding.engine.plugins.FlutterPlugin;
 import io.flutter.plugin.common.MethodCall;
@@ -57,6 +62,11 @@ import cn.nexgo.smartconnect.model.LoginEntity;
  * V2-JSON-Schnittstellen an Flutter durch. Über "isDev" kann je Verbindung
  * zwischen Dev- und Prod-Package gewählt werden. Vor jedem Bind und vor dem
  * Öffnen der GP-tom-Oberfläche wird die Signatur der App geprüft.
+ *
+ * Alle Binder-Aufrufe an GP tom sind synchron. Sie laufen deshalb nicht auf
+ * dem Main-Thread, sondern auf zwei Executoren mit je einem Thread: einer für
+ * den Payment-Service, einer für Login- und Info-Service. Ein hängendes
+ * getGPTomInfo hält so keine Zahlung auf.
  */
 public class GptomAidlPlugin implements FlutterPlugin, MethodChannel.MethodCallHandler {
 
@@ -75,6 +85,26 @@ public class GptomAidlPlugin implements FlutterPlugin, MethodChannel.MethodCallH
    * Über das Steuerfeld "timeoutMs" im Request-JSON überschreibbar.
    */
   private static final long DEFAULT_TRANSACTION_TIMEOUT_MS = 240000;
+  /**
+   * Frist für getGPTomInfo. GP tom fragt dafür zuerst sein Backend, offline
+   * kann das lange dauern. Über das Argument "timeoutMs" überschreibbar.
+   */
+  private static final long DEFAULT_INFO_TIMEOUT_MS = 20000;
+  /** Frist für transactionRegisterV2, über das Argument "timeoutMs" überschreibbar. */
+  private static final long DEFAULT_REGISTER_TIMEOUT_MS = 30000;
+
+  private static final String PAYMENT_NOT_BOUND = "GPTom Service not bound yet.";
+  private static final String LOGIN_NOT_BOUND = "GPTom login service not bound yet.";
+  private static final String INFO_NOT_BOUND = "GPTom info service not bound yet.";
+  // Feste Fehlertexte im Login-Pfad: die Meldung einer Exception könnte
+  // Zugangsdaten enthalten und geht deshalb weder an Dart noch ins Log.
+  private static final String LOGIN_ERROR_TEXT = "Login-Aufruf an GP tom fehlgeschlagen.";
+  private static final String LOGOUT_ERROR_TEXT = "Logout-Aufruf an GP tom fehlgeschlagen.";
+  private static final String CHANGE_PASSWORD_ERROR_TEXT =
+          "Passwortwechsel-Aufruf an GP tom fehlgeschlagen.";
+  private static final String INFO_ERROR_TEXT = "Status-Abfrage an GP tom fehlgeschlagen.";
+  private static final String UNTRUSTED_PAYMENT_TEXT =
+          "GP tom nicht vertrauenswürdig – Zahlung nicht gestartet.";
 
   /** Gemerkte Fingerprints für das Erstvertrauen, Key = Paketname. */
   private static final String TRUST_PREFS = "gptom_aidl_plugin_trust";
@@ -90,13 +120,19 @@ public class GptomAidlPlugin implements FlutterPlugin, MethodChannel.MethodCallH
   private Context applicationContext;
   private final Handler mainHandler = new Handler(Looper.getMainLooper());
 
-  private ISmartconnectService gptomService;
+  // Hintergrund-Threads für die Binder-Aufrufe, getrennt nach Payment und
+  // Account (Login, Info). Werden beim Detach heruntergefahren.
+  private Executor paymentExecutor;
+  private Executor accountExecutor;
+
+  // Gesetzt auf dem Main-Thread, gelesen in den Executoren.
+  private volatile ISmartconnectService gptomService;
   private ServiceConnection serviceConnection;
 
-  private IGPTomLoginService loginService;
+  private volatile IGPTomLoginService loginService;
   private ServiceConnection loginServiceConnection;
 
-  private IGPTomInfoService infoService;
+  private volatile IGPTomInfoService infoService;
   private ServiceConnection infoServiceConnection;
 
   // isDev je Verbindung: ein Info-Bind auf das Dev-Paket darf die Zahlung
@@ -180,6 +216,21 @@ public class GptomAidlPlugin implements FlutterPlugin, MethodChannel.MethodCallH
       }
       return false;
     }
+
+    /** true, wenn schon geantwortet wurde (z. B. vom Wächter). */
+    boolean isAnswered() {
+      return answered.get();
+    }
+  }
+
+  /** Ein Binder-Aufruf an GP tom, ausgeführt mit dem dann aktuellen Service. */
+  private interface BinderCall<S> {
+    void run(S service) throws Exception;
+  }
+
+  /** Antwort auf eine Ausnahme aus einem Binder-Aufruf. */
+  private interface ErrorAnswer {
+    void answer(Exception e);
   }
 
   private final IGPTomLoginChangedCallback loginChangedCallback = new IGPTomLoginChangedCallback.Stub() {
@@ -210,6 +261,12 @@ public class GptomAidlPlugin implements FlutterPlugin, MethodChannel.MethodCallH
   @Override
   public void onAttachedToEngine(@NonNull FlutterPluginBinding flutterPluginBinding) {
     this.applicationContext = flutterPluginBinding.getApplicationContext();
+    if (paymentExecutor == null) {
+      paymentExecutor = newWorker("gptom-payment");
+    }
+    if (accountExecutor == null) {
+      accountExecutor = newWorker("gptom-account");
+    }
 
     channel = new MethodChannel(
             flutterPluginBinding.getBinaryMessenger(),
@@ -227,6 +284,12 @@ public class GptomAidlPlugin implements FlutterPlugin, MethodChannel.MethodCallH
     unbindPaymentService();
     unbindLoginService();
     unbindInfoService();
+    // Schon eingereihte Aufgaben (z. B. unregisterCallback) laufen noch zu
+    // Ende, neue werden abgelehnt.
+    shutdown(paymentExecutor);
+    shutdown(accountExecutor);
+    paymentExecutor = null;
+    accountExecutor = null;
   }
 
   @Override
@@ -262,7 +325,8 @@ public class GptomAidlPlugin implements FlutterPlugin, MethodChannel.MethodCallH
       }
       case "registerTransactionV2": {
         String registerJson = call.argument("registerJson");
-        registerTransactionV2(registerJson, result);
+        registerTransactionV2(
+                registerJson, timeoutArgument(call, DEFAULT_REGISTER_TIMEOUT_MS), result);
         break;
       }
       case "requestTransactionV2": {
@@ -313,7 +377,7 @@ public class GptomAidlPlugin implements FlutterPlugin, MethodChannel.MethodCallH
         break;
       }
       case "getGpTomInfo": {
-        getGpTomInfo(result);
+        getGpTomInfo(timeoutArgument(call, DEFAULT_INFO_TIMEOUT_MS), result);
         break;
       }
       default:
@@ -347,13 +411,120 @@ public class GptomAidlPlugin implements FlutterPlugin, MethodChannel.MethodCallH
     return value == null || value;
   }
 
+  /** Wächter-Frist aus dem Argument "timeoutMs". Werte <= 0 schalten ihn ab. */
+  private long timeoutArgument(MethodCall call, long fallback) {
+    Object value = call.argument("timeoutMs");
+    return value instanceof Number ? ((Number) value).longValue() : fallback;
+  }
+
   private String targetPackage(boolean dev) {
     return dev ? DEV_PACKAGE : PROD_PACKAGE;
+  }
+
+  /** Ersetzt die Hintergrund-Executoren (für Tests). */
+  void setExecutorsForTesting(Executor payment, Executor account) {
+    shutdown(paymentExecutor);
+    shutdown(accountExecutor);
+    paymentExecutor = payment;
+    accountExecutor = account;
   }
 
   /** Paket der Payment-Verbindung (für Tests). */
   String paymentPackageForTesting() {
     return targetPackage(paymentIsDev);
+  }
+
+  // ---------------------------------------------------------------------------
+  // HINTERGRUND-THREADS UND WÄCHTER
+  // ---------------------------------------------------------------------------
+
+  private static ExecutorService newWorker(String name) {
+    return Executors.newSingleThreadExecutor(runnable -> {
+      Thread thread = new Thread(runnable, name);
+      thread.setDaemon(true);
+      return thread;
+    });
+  }
+
+  private static void shutdown(Executor executor) {
+    if (executor instanceof ExecutorService) {
+      ((ExecutorService) executor).shutdown();
+    }
+  }
+
+  /** Reiht eine Aufgabe ein. false, wenn es den Executor nicht mehr gibt. */
+  private static boolean runOn(Executor executor, Runnable task) {
+    if (executor == null) {
+      return false;
+    }
+    try {
+      executor.execute(task);
+      return true;
+    } catch (RejectedExecutionException e) {
+      return false;
+    }
+  }
+
+  /** Führt die Aufgabe auf dem Main-Thread aus (sofort, wenn man schon dort ist). */
+  private void runOnMain(Runnable task) {
+    if (Looper.myLooper() == Looper.getMainLooper()) {
+      task.run();
+    } else {
+      mainHandler.post(task);
+    }
+  }
+
+  /**
+   * Startet den Wächter für einen Aufruf: antwortet GP tom nicht binnen
+   * timeoutMs, bekommt der Aufruf TIMEOUT. timeoutMs <= 0: kein Wächter.
+   */
+  private Runnable startWatchdog(SingleResult result, long timeoutMs) {
+    Runnable watchdog = () -> result.error(
+            "TIMEOUT",
+            "GP tom hat binnen " + timeoutMs + " ms nicht geantwortet.");
+    if (timeoutMs > 0) {
+      mainHandler.postDelayed(watchdog, timeoutMs);
+    }
+    return watchdog;
+  }
+
+  private void cancelWatchdog(Runnable watchdog) {
+    if (watchdog != null) {
+      mainHandler.removeCallbacks(watchdog);
+    }
+  }
+
+  /**
+   * Führt einen Binder-Aufruf im Executor aus, mit dem Service, der dann
+   * gebunden ist. Ist er bis dahin getrennt oder gibt es den Executor nicht
+   * mehr, lautet die Antwort NOT_BOUND. Hat der Wächter schon geantwortet,
+   * wird GP tom nicht mehr gefragt. Wirft der Aufruf, wird der Wächter
+   * zurückgenommen und onError antwortet. Keine Ausnahme verlässt die Aufgabe.
+   */
+  private <S> void inBackground(Executor executor, Supplier<S> currentService,
+                                SingleResult result, Runnable watchdog, String notBoundText,
+                                BinderCall<S> call, ErrorAnswer onError) {
+    Runnable task = () -> {
+      if (result.isAnswered()) {
+        return;
+      }
+      S service = currentService.get();
+      if (service == null) {
+        cancelWatchdog(watchdog);
+        result.error("NOT_BOUND", notBoundText);
+        return;
+      }
+      try {
+        call.run(service);
+      } catch (Exception e) {
+        cancelWatchdog(watchdog);
+        onError.answer(e);
+      }
+    };
+    if (!runOn(executor, task)) {
+      cancelWatchdog(watchdog);
+      result.error("NOT_BOUND", notBoundText);
+    }
   }
 
   private int bindFlags() {
@@ -614,27 +785,32 @@ public class GptomAidlPlugin implements FlutterPlugin, MethodChannel.MethodCallH
   // ---------------------------------------------------------------------------
   // 1) registerTransactionV2
   // ---------------------------------------------------------------------------
-  private void registerTransactionV2(String registerJson, MethodChannel.Result rawResult) {
+  private void registerTransactionV2(String registerJson, long timeoutMs,
+                                     MethodChannel.Result rawResult) {
     final SingleResult result = new SingleResult(rawResult);
     if (gptomService == null) {
-      result.error("NOT_BOUND", "GPTom Service not bound yet.");
+      result.error("NOT_BOUND", PAYMENT_NOT_BOUND);
       return;
     }
-    try {
-      gptomService.transactionRegisterV2(registerJson, new ITransactionRegisterListener.Stub() {
-        @Override
-        public void onRegisterV2Result(String resultJson) {
-          result.success(resultJson);
-        }
+    final Runnable watchdog = startWatchdog(result, timeoutMs);
+    inBackground(paymentExecutor, () -> gptomService, result, watchdog, PAYMENT_NOT_BOUND,
+            service -> service.transactionRegisterV2(registerJson,
+                    new ITransactionRegisterListener.Stub() {
+                      @Override
+                      public void onRegisterV2Result(String resultJson) {
+                        cancelWatchdog(watchdog);
+                        // Nach TIMEOUT verworfen: eine Registrierung allein
+                        // startet keine Zahlung.
+                        result.success(resultJson);
+                      }
 
-        @Override
-        public void onRegisterResult(cn.nexgo.smartconnect.model.RegisterResultEntity registerResultEntity) {
-          // V1, deprecated
-        }
-      });
-    } catch (RemoteException e) {
-      result.error("REMOTE_EXCEPTION", e.getMessage());
-    }
+                      @Override
+                      public void onRegisterResult(
+                              cn.nexgo.smartconnect.model.RegisterResultEntity registerResultEntity) {
+                        // V1, deprecated
+                      }
+                    }),
+            e -> result.error("REMOTE_EXCEPTION", e.getMessage()));
   }
 
   // ---------------------------------------------------------------------------
@@ -643,15 +819,18 @@ public class GptomAidlPlugin implements FlutterPlugin, MethodChannel.MethodCallH
   private void requestTransactionV2(String requestJson, MethodChannel.Result rawResult) {
     final SingleResult result = new SingleResult(rawResult);
     if (gptomService == null) {
-      result.error("NOT_BOUND", "GPTom Service not bound yet.");
+      result.error("NOT_BOUND", PAYMENT_NOT_BOUND);
       return;
     }
+    final String finalJson;
+    final boolean openGptomUI;
+    final long timeoutMs;
     try {
       // JsonObject statt Map, damit Ganzzahlen (amount etc.) beim erneuten
       // Serialisieren nicht als "1111.0" enden.
       JsonObject parsed = JsonParser.parseString(requestJson).getAsJsonObject();
 
-      boolean openGptomUI = parsed.has("openGptomUI")
+      openGptomUI = parsed.has("openGptomUI")
               && !parsed.get("openGptomUI").isJsonNull()
               && parsed.get("openGptomUI").getAsBoolean();
 
@@ -663,64 +842,85 @@ public class GptomAidlPlugin implements FlutterPlugin, MethodChannel.MethodCallH
           // unbrauchbarer Wert -> Standardfrist
         }
       }
-      final long timeoutMs = timeout;
+      timeoutMs = timeout;
 
       // Steuerfelder gehören nicht ins GPTom-Request-JSON
       parsed.remove("redirect");
       parsed.remove("openGptomUI");
       parsed.remove("timeoutMs");
 
-      String finalJson = parsed.toString();
-
-      // Wächter: Antwortet GP tom nicht, darf die Kasse nicht ewig hängen.
-      final Runnable timeoutWatchdog = () -> result.error(
-              "TIMEOUT",
-              "GP tom hat binnen " + timeoutMs + " ms nicht geantwortet.");
-
-      gptomService.transactionRequestV2(finalJson, new ITransactionResultListener.Stub() {
-        @Override
-        public void onTransactionV2Result(String resultJson) {
-          mainHandler.removeCallbacks(timeoutWatchdog);
-          if (!result.success(resultJson)) {
-            // Der Wächter hat bereits mit TIMEOUT geantwortet. Der Kanal darf
-            // nicht doppelt beantwortet werden – das echte Ergebnis geht als
-            // Ereignis an Dart, damit die App einen unklaren Ausgang
-            // nachträglich auflösen kann.
-            sendLateTransactionResult(resultJson);
-          }
-        }
-
-        @Override
-        public void onTransactionResult(
-          cn.nexgo.smartconnect.model.TransactionResultEntity transactionResultEntity
-        ) {
-          // V1, deprecated
-        }
-      });
-
-      if (timeoutMs > 0) {
-        mainHandler.postDelayed(timeoutWatchdog, timeoutMs);
-      }
-
-      if (openGptomUI) {
-        String paymentPackage = targetPackage(paymentIsDev);
-        if (!verifyTarget(paymentPackage, paymentPins, paymentVerify).trusted) {
-          Log.w(TAG, "GP tom nicht vertrauenswürdig – UI nicht geöffnet");
-        } else {
-          Intent openGptom = applicationContext.getPackageManager()
-                  .getLaunchIntentForPackage(paymentPackage);
-          if (openGptom != null) {
-            openGptom.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
-            applicationContext.startActivity(openGptom);
-          } else {
-            Log.e(TAG, "requestTransactionV2: GPTom app not found!");
-          }
-        }
-      }
-    } catch (RemoteException e) {
-      result.error("REMOTE_EXCEPTION", e.getMessage());
+      finalJson = parsed.toString();
     } catch (Exception e) {
       result.error("INVALID_REQUEST", e.getMessage());
+      return;
+    }
+
+    final String paymentPackage = targetPackage(paymentIsDev);
+    if (openGptomUI && !verifyTarget(paymentPackage, paymentPins, paymentVerify).trusted) {
+      // Vor dem Start prüfen: eine Zahlung in einer App, deren Oberfläche
+      // nicht geöffnet würde, darf gar nicht erst laufen.
+      Log.w(TAG, "GP tom nicht vertrauenswürdig – Zahlung nicht gestartet");
+      result.error("UNTRUSTED_APP", UNTRUSTED_PAYMENT_TEXT);
+      return;
+    }
+
+    // Wächter: Antwortet GP tom nicht, darf die Kasse nicht ewig hängen. Er
+    // läuft ab dem Aufruf, also auch, solange der Payment-Executor belegt ist.
+    // Läuft er ab, bevor die Aufgabe dran ist, wird keine Zahlung gestartet.
+    final Runnable timeoutWatchdog = startWatchdog(result, timeoutMs);
+
+    inBackground(paymentExecutor, () -> gptomService, result, timeoutWatchdog, PAYMENT_NOT_BOUND,
+            service -> {
+              service.transactionRequestV2(finalJson, new ITransactionResultListener.Stub() {
+                @Override
+                public void onTransactionV2Result(String resultJson) {
+                  cancelWatchdog(timeoutWatchdog);
+                  if (!result.success(resultJson)) {
+                    // Der Wächter hat bereits mit TIMEOUT geantwortet. Der Kanal darf
+                    // nicht doppelt beantwortet werden – das echte Ergebnis geht als
+                    // Ereignis an Dart, damit die App einen unklaren Ausgang
+                    // nachträglich auflösen kann.
+                    sendLateTransactionResult(resultJson);
+                  }
+                }
+
+                @Override
+                public void onTransactionResult(
+                  cn.nexgo.smartconnect.model.TransactionResultEntity transactionResultEntity
+                ) {
+                  // V1, deprecated
+                }
+              });
+              if (openGptomUI) {
+                runOnMain(() -> openGptomUi(paymentPackage));
+              }
+            },
+            e -> result.error(
+                    e instanceof RemoteException ? "REMOTE_EXCEPTION" : "INVALID_REQUEST",
+                    e.getMessage()));
+  }
+
+  /**
+   * Holt GP tom nach vorn (Main-Thread). Die Signatur wird noch einmal
+   * geprüft, falls die App inzwischen getauscht wurde. Fehler hier ändern
+   * nichts an der laufenden Zahlung und werden nur protokolliert.
+   */
+  private void openGptomUi(String paymentPackage) {
+    try {
+      if (!verifyTarget(paymentPackage, paymentPins, paymentVerify).trusted) {
+        Log.w(TAG, "GP tom nicht vertrauenswürdig – UI nicht geöffnet");
+        return;
+      }
+      Intent openGptom = applicationContext.getPackageManager()
+              .getLaunchIntentForPackage(paymentPackage);
+      if (openGptom != null) {
+        openGptom.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+        applicationContext.startActivity(openGptom);
+      } else {
+        Log.e(TAG, "requestTransactionV2: GPTom app not found!");
+      }
+    } catch (Exception e) {
+      Log.e(TAG, "requestTransactionV2: GP tom konnte nicht geöffnet werden");
     }
   }
 
@@ -742,19 +942,17 @@ public class GptomAidlPlugin implements FlutterPlugin, MethodChannel.MethodCallH
   private void stateRequest(String transactionId, MethodChannel.Result rawResult) {
     final SingleResult result = new SingleResult(rawResult);
     if (gptomService == null) {
-      result.error("NOT_BOUND", "GPTom Service not bound yet.");
+      result.error("NOT_BOUND", PAYMENT_NOT_BOUND);
       return;
     }
-    try {
-      gptomService.stateRequest(transactionId, new IStateResultListener.Stub() {
-        @Override
-        public void onStateResult(String resultJson) {
-          result.success(resultJson);
-        }
-      });
-    } catch (RemoteException e) {
-      result.error("REMOTE_EXCEPTION", e.getMessage());
-    }
+    inBackground(paymentExecutor, () -> gptomService, result, null, PAYMENT_NOT_BOUND,
+            service -> service.stateRequest(transactionId, new IStateResultListener.Stub() {
+              @Override
+              public void onStateResult(String resultJson) {
+                result.success(resultJson);
+              }
+            }),
+            e -> result.error("REMOTE_EXCEPTION", e.getMessage()));
   }
 
   // ---------------------------------------------------------------------------
@@ -763,19 +961,18 @@ public class GptomAidlPlugin implements FlutterPlugin, MethodChannel.MethodCallH
   private void inquireTransaction(String transactionId, MethodChannel.Result rawResult) {
     final SingleResult result = new SingleResult(rawResult);
     if (gptomService == null) {
-      result.error("NOT_BOUND", "GPTom Service not bound yet.");
+      result.error("NOT_BOUND", PAYMENT_NOT_BOUND);
       return;
     }
-    try {
-      gptomService.TransactionInquire(transactionId, new IInquireResultListener.Stub() {
-        @Override
-        public void onInquireResult(cn.nexgo.smartconnect.model.InquireResultEntity inquireResultEntity) {
-          result.success(new Gson().toJson(inquireResultEntity));
-        }
-      });
-    } catch (RemoteException e) {
-      result.error("REMOTE_EXCEPTION", e.getMessage());
-    }
+    inBackground(paymentExecutor, () -> gptomService, result, null, PAYMENT_NOT_BOUND,
+            service -> service.TransactionInquire(transactionId, new IInquireResultListener.Stub() {
+              @Override
+              public void onInquireResult(
+                      cn.nexgo.smartconnect.model.InquireResultEntity inquireResultEntity) {
+                result.success(new Gson().toJson(inquireResultEntity));
+              }
+            }),
+            e -> result.error("REMOTE_EXCEPTION", e.getMessage()));
   }
 
   // ---------------------------------------------------------------------------
@@ -815,12 +1012,19 @@ public class GptomAidlPlugin implements FlutterPlugin, MethodChannel.MethodCallH
       loginServiceConnection = new ServiceConnection() {
         @Override
         public void onServiceConnected(ComponentName name, IBinder binder) {
-          loginService = IGPTomLoginService.Stub.asInterface(binder);
+          final IGPTomLoginService service = IGPTomLoginService.Stub.asInterface(binder);
+          loginService = service;
           mainHandler.removeCallbacks(bindWatchdog);
-          try {
-            loginService.registerCallback(loginChangedCallback);
-          } catch (RemoteException e) {
-            Log.e(TAG, "bindLoginService: registerCallback failed: " + e.getMessage());
+          if (service != null) {
+            // Synchroner Binder-Aufruf, also im Account-Executor. Der arbeitet
+            // der Reihe nach: ein folgendes Login läuft erst danach.
+            runOn(accountExecutor, () -> {
+              try {
+                service.registerCallback(loginChangedCallback);
+              } catch (Exception e) {
+                Log.e(TAG, "bindLoginService: registerCallback fehlgeschlagen");
+              }
+            });
           }
           result.success(true);
         }
@@ -858,16 +1062,20 @@ public class GptomAidlPlugin implements FlutterPlugin, MethodChannel.MethodCallH
     answerPendingBind(loginBindWatchdog);
     loginBindWatchdog = null;
     if (loginServiceConnection != null) {
-      try {
-        if (loginService != null) {
-          loginService.unregisterCallback(loginChangedCallback);
-        }
-      } catch (Exception ignored) {
+      final IGPTomLoginService service = loginService;
+      if (service != null) {
+        // Abmelden ist ein Binder-Aufruf und darf den Main-Thread nicht blockieren.
+        runOn(accountExecutor, () -> {
+          try {
+            service.unregisterCallback(loginChangedCallback);
+          } catch (Exception ignored) {
+          }
+        });
       }
       try {
         applicationContext.unbindService(loginServiceConnection);
       } catch (Exception e) {
-        Log.e(TAG, "unbindLoginService: " + e.getMessage());
+        Log.e(TAG, "unbindLoginService: Trennen fehlgeschlagen");
       }
       loginServiceConnection = null;
       loginService = null;
@@ -875,61 +1083,63 @@ public class GptomAidlPlugin implements FlutterPlugin, MethodChannel.MethodCallH
     }
   }
 
+  // Login, Logout und Passwortwechsel: Die Antwort heißt nur "angenommen",
+  // das Ergebnis kommt asynchron über onLoginStatusChanged. Fehler werden mit
+  // festem Text gemeldet, nie mit der Meldung der Exception.
+
   private void gpTomLogin(MethodCall call, MethodChannel.Result rawResult) {
     final SingleResult result = new SingleResult(rawResult);
     if (loginService == null) {
-      result.error("NOT_BOUND", "GPTom login service not bound yet.");
+      result.error("NOT_BOUND", LOGIN_NOT_BOUND);
       return;
     }
-    try {
-      LoginEntity entity = new LoginEntity(
-              call.argument("username"),
-              call.argument("password"),
-              call.argument("terminalId"),
-              call.argument("authCode")
-      );
-      loginService.login(new Gson().toJson(entity));
-      // Das Ergebnis kommt asynchron über onLoginStatusChanged.
-      result.success(true);
-    } catch (Exception e) {
-      result.error("LOGIN_ERROR", e.getMessage());
-    }
+    inBackground(accountExecutor, () -> loginService, result, null, LOGIN_NOT_BOUND,
+            service -> {
+              LoginEntity entity = new LoginEntity(
+                      call.argument("username"),
+                      call.argument("password"),
+                      call.argument("terminalId"),
+                      call.argument("authCode")
+              );
+              service.login(new Gson().toJson(entity));
+              result.success(true);
+            },
+            e -> result.error("LOGIN_ERROR", LOGIN_ERROR_TEXT));
   }
 
   private void gpTomLogout(MethodChannel.Result rawResult) {
     final SingleResult result = new SingleResult(rawResult);
     if (loginService == null) {
-      result.error("NOT_BOUND", "GPTom login service not bound yet.");
+      result.error("NOT_BOUND", LOGIN_NOT_BOUND);
       return;
     }
-    try {
-      loginService.logout();
-      result.success(true);
-    } catch (Exception e) {
-      result.error("LOGOUT_ERROR", e.getMessage());
-    }
+    inBackground(accountExecutor, () -> loginService, result, null, LOGIN_NOT_BOUND,
+            service -> {
+              service.logout();
+              result.success(true);
+            },
+            e -> result.error("LOGOUT_ERROR", LOGOUT_ERROR_TEXT));
   }
 
   private void gpTomChangePassword(MethodCall call, MethodChannel.Result rawResult) {
     final SingleResult result = new SingleResult(rawResult);
     if (loginService == null) {
-      result.error("NOT_BOUND", "GPTom login service not bound yet.");
+      result.error("NOT_BOUND", LOGIN_NOT_BOUND);
       return;
     }
-    try {
-      Boolean validationOnly = call.argument("validationOnly");
-      ChangePasswordEntity entity = new ChangePasswordEntity(
-              call.argument("oldPass"),
-              call.argument("newPass"),
-              call.argument("authCode"),
-              validationOnly != null && validationOnly
-      );
-      loginService.changePassword(new Gson().toJson(entity));
-      // Das Ergebnis kommt asynchron über onLoginStatusChanged.
-      result.success(true);
-    } catch (Exception e) {
-      result.error("CHANGE_PASSWORD_ERROR", e.getMessage());
-    }
+    inBackground(accountExecutor, () -> loginService, result, null, LOGIN_NOT_BOUND,
+            service -> {
+              Boolean validationOnly = call.argument("validationOnly");
+              ChangePasswordEntity entity = new ChangePasswordEntity(
+                      call.argument("oldPass"),
+                      call.argument("newPass"),
+                      call.argument("authCode"),
+                      validationOnly != null && validationOnly
+              );
+              service.changePassword(new Gson().toJson(entity));
+              result.success(true);
+            },
+            e -> result.error("CHANGE_PASSWORD_ERROR", CHANGE_PASSWORD_ERROR_TEXT));
   }
 
   // ---------------------------------------------------------------------------
@@ -969,12 +1179,17 @@ public class GptomAidlPlugin implements FlutterPlugin, MethodChannel.MethodCallH
       infoServiceConnection = new ServiceConnection() {
         @Override
         public void onServiceConnected(ComponentName name, IBinder binder) {
-          infoService = IGPTomInfoService.Stub.asInterface(binder);
+          final IGPTomInfoService service = IGPTomInfoService.Stub.asInterface(binder);
+          infoService = service;
           mainHandler.removeCallbacks(bindWatchdog);
-          try {
-            infoService.registerCallback(infoChangedCallback);
-          } catch (RemoteException e) {
-            Log.e(TAG, "bindInfoService: registerCallback failed: " + e.getMessage());
+          if (service != null) {
+            runOn(accountExecutor, () -> {
+              try {
+                service.registerCallback(infoChangedCallback);
+              } catch (Exception e) {
+                Log.e(TAG, "bindInfoService: registerCallback fehlgeschlagen");
+              }
+            });
           }
           result.success(true);
         }
@@ -1012,16 +1227,19 @@ public class GptomAidlPlugin implements FlutterPlugin, MethodChannel.MethodCallH
     answerPendingBind(infoBindWatchdog);
     infoBindWatchdog = null;
     if (infoServiceConnection != null) {
-      try {
-        if (infoService != null) {
-          infoService.unregisterCallback(infoChangedCallback);
-        }
-      } catch (Exception ignored) {
+      final IGPTomInfoService service = infoService;
+      if (service != null) {
+        runOn(accountExecutor, () -> {
+          try {
+            service.unregisterCallback(infoChangedCallback);
+          } catch (Exception ignored) {
+          }
+        });
       }
       try {
         applicationContext.unbindService(infoServiceConnection);
       } catch (Exception e) {
-        Log.e(TAG, "unbindInfoService: " + e.getMessage());
+        Log.e(TAG, "unbindInfoService: Trennen fehlgeschlagen");
       }
       infoServiceConnection = null;
       infoService = null;
@@ -1029,16 +1247,21 @@ public class GptomAidlPlugin implements FlutterPlugin, MethodChannel.MethodCallH
     }
   }
 
-  private void getGpTomInfo(MethodChannel.Result rawResult) {
+  private void getGpTomInfo(long timeoutMs, MethodChannel.Result rawResult) {
     final SingleResult result = new SingleResult(rawResult);
     if (infoService == null) {
-      result.error("NOT_BOUND", "GPTom info service not bound yet.");
+      result.error("NOT_BOUND", INFO_NOT_BOUND);
       return;
     }
-    try {
-      result.success(infoService.getGPTomInfo());
-    } catch (Exception e) {
-      result.error("INFO_ERROR", e.getMessage());
-    }
+    // Ohne Netz kann GP tom hier lange hängen. Der Wächter beantwortet den
+    // Aufruf, der Binder-Aufruf selbst läuft im Account-Executor weiter.
+    final Runnable watchdog = startWatchdog(result, timeoutMs);
+    inBackground(accountExecutor, () -> infoService, result, watchdog, INFO_NOT_BOUND,
+            service -> {
+              String json = service.getGPTomInfo();
+              cancelWatchdog(watchdog);
+              result.success(json);
+            },
+            e -> result.error("INFO_ERROR", INFO_ERROR_TEXT));
   }
 }
