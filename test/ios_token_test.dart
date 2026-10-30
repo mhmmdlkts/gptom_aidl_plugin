@@ -792,6 +792,35 @@ void main() {
       expect(result.transactionType, isNull);
     });
 
+    test('Belegabfrage nur per requestId bei sendRequestIdIOS aus: ArgumentError '
+        'vor dem Öffnen', () async {
+      GptomSecurityConfig.current =
+          const GptomSecurityConfig(sendRequestIdIOS: false);
+      gpTom(antwort: (a) => antwortAuf(a, {'status': 'COMPLETED'}));
+
+      await expectLater(
+        GptomAidlPlugin().transactionDetailIOS(
+          requestId: GptomAidlPlugin.neueVorgangsId(),
+          timeout: const Duration(milliseconds: 200),
+        ),
+        throwsA(isA<ArgumentError>().having(
+          (e) => e.message,
+          'message',
+          'transactionDetailIOS: Abfrage per requestId braucht sendRequestIdIOS – amsId angeben',
+        )),
+      );
+      expect(gerufen, isNull);
+
+      // Mit amsId geht es weiter – nur ohne requestID an GP tom.
+      await GptomAidlPlugin().transactionDetailIOS(
+        amsId: 'ams-2',
+        requestId: GptomAidlPlugin.neueVorgangsId(),
+        timeout: const Duration(milliseconds: 200),
+      );
+      expect(gerufen!.queryParameters['amsID'], 'ams-2');
+      expect(gerufen!.queryParameters.containsKey('requestID'), isFalse);
+    });
+
     test('Belegabfrage ohne amsId und requestId wirft ArgumentError', () {
       gpTom();
       expect(() => GptomAidlPlugin().transactionDetailIOS(), throwsArgumentError);

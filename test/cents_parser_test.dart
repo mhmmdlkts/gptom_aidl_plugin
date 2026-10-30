@@ -28,6 +28,17 @@ void main() {
       '4,35 €': null,
       'EUR 4.35': null,
       '--4': null,
+      // Tausender-Gruppen müssen genau drei Ziffern haben, die erste Gruppe
+      // ein bis drei Ziffern ohne führende Null.
+      '1.2.3,4': null,
+      '1,2,3.4': null,
+      '1.234.56': null,
+      '1.234.567,89': 123456789,
+      '12.345,67': 1234567,
+      // Eine 0 vorne ist keine Tausender-Gruppe: Dezimalzeichen, gerundet.
+      '0,995': 100,
+      '0.995': 100,
+      '0.123,45': null,
     };
 
     erwartungen.forEach((eingabe, erwartet) {

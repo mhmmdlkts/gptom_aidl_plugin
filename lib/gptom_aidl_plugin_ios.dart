@@ -1105,7 +1105,9 @@ class GptomAidlPluginIOS {
   /// Fragt über `gptom://transaction/detail` den Beleg einer Transaktion ab,
   /// per [amsId] und/oder [requestId] (die vor dem Aufruf gespeicherte
   /// Vorgangskennung). Die Abfrage selbst läuft unter einem eigenen,
-  /// frischen Token. Fehlen beide, wirft die Methode [ArgumentError].
+  /// frischen Token. Fehlen beide, wirft die Methode [ArgumentError], ebenso
+  /// bei einer Abfrage nur per [requestId], wenn `sendRequestIdIOS` aus ist
+  /// (dann geht keine `requestID` an GP tom) – jeweils vor dem Öffnen.
   ///
   /// Das Ergebnis liest den Beleg wie beim Verkauf, aber ohne
   /// `transactionType`. Ohne Beleg ist es [GptomResultCode.noReceipt], nie
@@ -1121,10 +1123,17 @@ class GptomAidlPluginIOS {
     if (amsId == null && requestId == null) {
       throw ArgumentError('amsId oder requestId angeben.');
     }
+    final sendeRequestId = GptomSecurityConfig.current.sendRequestIdIOS;
+    if (amsId == null && !sendeRequestId) {
+      // Ohne requestID an GP tom bliebe die Abfrage leer – vor dem Öffnen
+      // abbrechen statt GP tom mit einer unvollständigen URL aufzurufen.
+      throw ArgumentError(
+        'transactionDetailIOS: Abfrage per requestId braucht sendRequestIdIOS – amsId angeben',
+      );
+    }
     if (!isActive) {
       return RequestResult(result: GptomResultCode.exception, requestId: requestId);
     }
-    final sendeRequestId = GptomSecurityConfig.current.sendRequestIdIOS;
 
     final antwort = await roundtrip(
       (redirectUrl) => buildTransactionDetailUri(

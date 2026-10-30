@@ -45,6 +45,12 @@ class GptomAccount {
   /// Standard-Frist des nativen Wächters für die Statusabfrage (Android).
   static const Duration defaultStatusTimeoutAndroid = Duration(seconds: 20);
 
+  /// Eine Frist von 0 oder weniger wäre sofort abgelaufen (und nativ
+  /// sinnlos). Sie zählt wie keine Angabe: es gilt die Standardfrist der
+  /// jeweiligen Operation.
+  static Duration? _frist(Duration? timeout) =>
+      timeout == null || timeout <= Duration.zero ? null : timeout;
+
   /// Marke der laufenden Operation; `null` = frei. Eine Marke statt eines
   /// Flags, damit eine alte Operation nach [debugReset] nicht die Sperre
   /// einer neueren freigibt.
@@ -84,7 +90,8 @@ class GptomAccount {
   ///
   /// Android: bindet den Info-Service bei Bedarf; [timeout] ist die Frist des
   /// nativen Wächters (Standard 20 s). iOS: `gptom://status` mit Redirect
-  /// (Standard 30 s), wechselt dafür kurz zu GP tom.
+  /// (Standard 30 s), wechselt dafür kurz zu GP tom. Ein [timeout] von 0 oder
+  /// weniger zählt wie keiner.
   Future<GpTomInfo?> getStatus({
     bool isDevAndroid = false,
     Duration? timeout,
@@ -94,19 +101,21 @@ class GptomAccount {
 
   /// Status mit Grund, falls keiner kam. Android: [GptomLoginOutcome.notSupported]
   /// (Info-Service fehlt), [GptomLoginOutcome.timeout] (Wächter) oder
-  /// [GptomLoginOutcome.failed]. iOS: Fehler aus [GptomIosAccount.status].
+  /// [GptomLoginOutcome.failed] (auch bei jeder anderen Ausnahme, etwa einer
+  /// unlesbaren Antwort). iOS: Fehler aus [GptomIosAccount.status].
   Future<({GpTomInfo? info, GptomLoginOutcome? fehler})> _statusAbfragen({
     required bool isDevAndroid,
     Duration? timeout,
   }) async {
-    if (_ios) return GptomIosAccount.status(timeout: timeout);
+    final frist = _frist(timeout);
+    if (_ios) return GptomIosAccount.status(timeout: frist);
     final plattform = _plattform;
     try {
       if (!await plattform.bindInfoService(isDevAndroid: isDevAndroid)) {
         return (info: null, fehler: GptomLoginOutcome.notSupported);
       }
       final info = await plattform.getGpTomInfo(
-        timeout: timeout ?? defaultStatusTimeoutAndroid,
+        timeout: frist ?? defaultStatusTimeoutAndroid,
       );
       if (info == null) return (info: null, fehler: GptomLoginOutcome.failed);
       return (info: info, fehler: null);
@@ -117,6 +126,10 @@ class GptomAccount {
             ? GptomLoginOutcome.timeout
             : GptomLoginOutcome.failed,
       );
+    } catch (_) {
+      // Z. B. eine unlesbare Antwort: kein Status, aber auch kein Absturz
+      // des Morgen-Checks.
+      return (info: null, fehler: GptomLoginOutcome.failed);
     }
   }
 
@@ -124,9 +137,11 @@ class GptomAccount {
   /// (Standard 60 s).
   ///
   /// [authCode] ist der Mail-Code nach [GptomLoginOutcome.tidReleaseRequired]
-  /// (nur Android). Auf iOS gibt es keine TID-Freigabe per Code; mit
-  /// [authCode] liefert der Aufruf [GptomLoginOutcome.invalidArgument], ohne
-  /// GP tom zu öffnen.
+  /// (nur Android). Ein leerer oder nur aus Leerzeichen bestehender
+  /// [authCode] zählt wie keiner. Auf iOS gibt es keine TID-Freigabe per
+  /// Code; mit [authCode] liefert der Aufruf
+  /// [GptomLoginOutcome.invalidArgument], ohne GP tom zu öffnen. Ein
+  /// [timeout] von 0 oder weniger zählt wie keiner.
   Future<GptomLoginResult> login(
     GptomCredentials credentials, {
     String? authCode,
@@ -147,24 +162,27 @@ class GptomAccount {
     required bool isDevAndroid,
     Duration? timeout,
   }) {
+    final getrimmt = authCode?.trim();
+    final code = getrimmt == null || getrimmt.isEmpty ? null : getrimmt;
+    final frist = _frist(timeout);
     if (_ios) {
-      if (authCode != null) {
+      if (code != null) {
         return Future.value(const GptomLoginResult(
           outcome: GptomLoginOutcome.invalidArgument,
           message: 'Auf iOS gibt es keine TID-Freigabe per Code.',
         ));
       }
-      return GptomIosAccount.login(c, timeout: timeout);
+      return GptomIosAccount.login(c, timeout: frist);
     }
     return _androidKonto(
       op: GptomAccountOperation.login,
       isDevAndroid: isDevAndroid,
-      timeout: timeout,
+      timeout: frist,
       aufruf: (p) => p.loginGpTom(
         username: c.username,
         password: c.password,
         terminalId: c.terminalId,
-        authCode: authCode,
+        authCode: code,
       ),
     );
   }
@@ -175,11 +193,12 @@ class GptomAccount {
     Duration? timeout,
   }) =>
       _gesperrt(() {
-        if (_ios) return GptomIosAccount.logout(timeout: timeout);
+        final frist = _frist(timeout);
+        if (_ios) return GptomIosAccount.logout(timeout: frist);
         return _androidKonto(
           op: GptomAccountOperation.logout,
           isDevAndroid: isDevAndroid,
-          timeout: timeout,
+          timeout: frist,
           aufruf: (p) => p.logoutGpTom(),
         );
       });
@@ -201,6 +220,7 @@ class GptomAccount {
     Duration? timeout,
   }) =>
       _gesperrt(() {
+        final frist = _frist(timeout);
         if (_ios) {
           return GptomIosAccount.changePassword(
             username: username,
@@ -208,14 +228,14 @@ class GptomAccount {
             newPassword: newPassword,
             terminalId: terminalId,
             code: code,
-            timeout: timeout,
+            timeout: frist,
           );
         }
         final mitCode = code != null && code.isNotEmpty;
         return _androidKonto(
           op: GptomAccountOperation.changePassword,
           isDevAndroid: isDevAndroid,
-          timeout: timeout,
+          timeout: frist,
           aufruf: (p) => p.changeGpTomPassword(
             currentPassword: currentPassword,
             newPassword: newPassword,
@@ -241,7 +261,8 @@ class GptomAccount {
   ///
   /// [credentials] wird erst in Schritt 5 aufgerufen; Exceptions daraus
   /// werden weitergereicht. Das Ergebnis trägt in `info` den Status aus
-  /// Schritt 2. [timeout] gilt je Schritt (Status und Login).
+  /// Schritt 2. [timeout] gilt je Schritt (Status und Login); 0 oder weniger
+  /// zählt wie keiner.
   Future<GptomLoginResult> ensureLoggedIn({
     required FutureOr<GptomCredentials?> Function() credentials,
     String? expectedTerminalId,

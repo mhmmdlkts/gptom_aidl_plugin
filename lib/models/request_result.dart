@@ -112,6 +112,8 @@ class RequestResult {
       transactionType: TransactionType.fromId(map['transactionType']),
       sequenceNumber: map['sequenceNumber'] as String?,
       terminalID: map['terminalID'] as String?,
+      // Gegenstück zu toMap (iOS-Vorgangskennung).
+      requestId: map['requestId']?.toString(),
       // Fehler-Objekt:
       error: map['error'] != null
           ? ErrorInfo.fromMap(Map<String, dynamic>.from(map['error']), result: map['result'])

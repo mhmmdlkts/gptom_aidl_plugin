@@ -163,6 +163,31 @@ void main() {
       await horch.dispose();
     });
 
+    test('leerer oder nur aus Leerzeichen bestehender authCode zählt wie keiner',
+        () async {
+      fake.onLogin = (_) => ereignis('USER_LOGGED_IN');
+      await konto.login(zugang, authCode: '', timeout: kurz);
+      await konto.login(zugang, authCode: '   ', timeout: kurz);
+      expect(fake.loginCalls.map((c) => c['authCode']), [null, null]);
+    });
+
+    test('timeout 0 oder negativ: es gilt die Standardfrist', () async {
+      // Das Ereignis kommt erst nach 20 ms – mit einer Frist von 0 wäre der
+      // Aufruf längst abgelaufen.
+      fake.onLogin = (_) {
+        Future<void>.delayed(const Duration(milliseconds: 20),
+            () => fake.emitLoginStatus(ereignis('USER_LOGGED_IN')));
+        return null;
+      };
+      expect((await konto.login(zugang, timeout: Duration.zero)).outcome,
+          GptomLoginOutcome.loggedIn);
+      expect(
+          (await konto.login(zugang,
+                  timeout: const Duration(milliseconds: -5)))
+              .outcome,
+          GptomLoginOutcome.loggedIn);
+    });
+
     test('bindLoginService false → notSupported', () async {
       fake.bindLoginServiceResult = false;
       final r = await konto.login(zugang, timeout: kurz);
@@ -288,6 +313,24 @@ void main() {
     test('PlatformException → null', () async {
       fake.getGpTomInfoError = PlatformException(code: 'TIMEOUT');
       expect(await konto.getStatus(), isNull);
+    });
+
+    test('andere Ausnahme (z. B. FormatException) → null, ensureLoggedIn failed',
+        () async {
+      fake.getGpTomInfoError = const FormatException('kaputt');
+      expect(await konto.getStatus(), isNull);
+      final r = await konto.ensureLoggedIn(
+        credentials: () => throw StateError('darf nicht gerufen werden'),
+      );
+      expect(r.outcome, GptomLoginOutcome.failed);
+    });
+
+    test('timeout 0 oder negativ: Standard-Wächter 20 s', () async {
+      fake.gpTomInfo = status(GptomLoginState.loggedIn);
+      await konto.getStatus(timeout: Duration.zero);
+      await konto.getStatus(timeout: const Duration(seconds: -1));
+      expect(fake.getGpTomInfoTimeouts.map((t) => t!.inMilliseconds),
+          [20000, 20000]);
     });
   });
 
@@ -560,6 +603,33 @@ void main() {
       );
       expect(r.outcome, GptomLoginOutcome.alreadyLoggedIn);
       expect(geoeffnet.map((u) => u.host), ['status']);
+    });
+
+    test('iOS: leerer authCode zählt wie keiner, Login läuft', () async {
+      gpTom((_) => {'status': 'COMPLETED'});
+      final ios = GptomAccount(platform: fake, isIOS: true);
+      expect((await ios.login(zugang, authCode: '', timeout: kurz)).outcome,
+          GptomLoginOutcome.loggedIn);
+      expect((await ios.login(zugang, authCode: '  ', timeout: kurz)).outcome,
+          GptomLoginOutcome.loggedIn);
+      expect(geoeffnet.map((u) => u.host), ['login', 'login']);
+    });
+
+    test('iOS: Status mit timeout 0 wartet die Standardfrist', () async {
+      // GP tom antwortet erst nach 20 ms.
+      GptomAidlPluginIOS.debugLauncher = (uri) async {
+        final redirect = Uri.parse(uri.queryParameters['redirectUrl']!)
+            .replace(queryParameters: {
+          'status': 'COMPLETED',
+          'appStatus': '{"userInfo":{"tid":"12345678"}}',
+        });
+        Future<void>.delayed(const Duration(milliseconds: 20),
+            () => GptomAidlPluginIOS.debugHandleRedirect(redirect));
+        return true;
+      };
+      final info = await GptomAccount(platform: fake, isIOS: true)
+          .getStatus(timeout: Duration.zero);
+      expect(info?.tid, '12345678');
     });
 
     test('iOS: login mit authCode → invalidArgument, GP tom nicht geöffnet',

@@ -465,8 +465,11 @@ class GptomAidlPlugin {
 
   /// Belegabfrage (nur iOS, `gptom://transaction/detail`) per [amsId] und/oder
   /// [requestId] – die vor dem Zahlungsaufruf gespeicherte Vorgangskennung.
-  /// Fehlen beide, wirft die Methode [ArgumentError]. Das Ergebnis trägt die
-  /// nachgeschlagene [requestId] (sonst `null`). Standard-Timeout 30 s.
+  /// Fehlen beide, wirft die Methode [ArgumentError], ebenso bei einer
+  /// Abfrage nur per [requestId], wenn `sendRequestIdIOS` aus ist. Ohne Beleg
+  /// im Redirect ist das Ergebnis [GptomResultCode.noReceipt], nie Erfolg.
+  /// Das Ergebnis trägt die nachgeschlagene [requestId] (sonst `null`).
+  /// Standard-Timeout 30 s.
   /// Auf Android: [inquireTransactionAndroid].
   Future<RequestResult> transactionDetailIOS({
     String? amsId,

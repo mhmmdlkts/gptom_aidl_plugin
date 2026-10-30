@@ -152,4 +152,13 @@ void main() {
     expect(RequestResult(result: 0, requestId: 'r-1').toMap()['requestId'],
         'r-1');
   });
+
+  test('requestId übersteht den Roundtrip über toMap und fromMap', () {
+    final id = 'a1' * 16;
+    final zurueck =
+        RequestResult.fromMap(RequestResult(result: 0, requestId: id).toMap());
+    expect(zurueck.requestId, id);
+    expect(RequestResult.fromMap(RequestResult(result: 0).toMap()).requestId,
+        isNull);
+  });
 }
