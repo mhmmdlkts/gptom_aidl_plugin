@@ -226,7 +226,7 @@ class InquireResult {
   }
 }
 
-/// Verschachtelte Info, z. B. {"city":"Bratislava","company":"Airspeed SK s.r.o.","house":"100/B","street":"Vajnorská","zip":"83104"}
+/// Verschachtelte Info, z. B. {"city":"Wien","company":"Melisse Nails e.U.","house":"1","street":"Musterstraße","zip":"1010"}
 class InquireMerchantInfo {
   final String? city;
   final String? company;

@@ -21,8 +21,8 @@ void main() {
         'currencyCode': 978,
         'pinOk': true,
         'merchantInfo': {
-          'city': 'Bratislava',
-          'company': 'Airspeed SK s.r.o.',
+          'city': 'Wien',
+          'company': 'Melisse Nails e.U.',
         },
       });
 
@@ -39,7 +39,8 @@ void main() {
       expect(result.approvedCode, '529625');
       expect(result.currencyCode, '978');
       expect(result.pinOk, true);
-      expect(result.merchantInfo?.city, 'Bratislava');
+      expect(result.merchantInfo?.city, 'Wien');
+      expect(result.merchantInfo?.company, 'Melisse Nails e.U.');
     });
 
     test('mappt transactionType über die GPTom-ID, nicht den Enum-Index', () {
