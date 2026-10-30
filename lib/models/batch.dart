@@ -1,5 +1,7 @@
 import 'dart:convert';
 
+import '../src/cents_parser.dart';
+
 class Batch implements Comparable<Batch> {
   final int saleCount;
   final DateTime? previousBatchDate;
@@ -52,17 +54,11 @@ class Batch implements Comparable<Batch> {
     required this.amsId,
   });
 
-  /// GPTom liefert die Batch-Beträge als Euro-Dezimalwerte (z. B. 95.5).
-  static int _centsFromEuro(num value) => (value * 100).round();
-
   static int _asInt(dynamic value) =>
       value is num ? value.toInt() : int.tryParse('$value') ?? 0;
 
-  static int _asCents(dynamic value) {
-    if (value is num) return _centsFromEuro(value);
-    final parsed = double.tryParse('$value');
-    return parsed == null ? 0 : _centsFromEuro(parsed);
-  }
+  /// GPTom liefert die Batch-Beträge als Euro-Dezimalwerte (z. B. 95.5).
+  static int _asCents(dynamic value) => centsFromDecimal(value) ?? 0;
 
   static DateTime? _asDate(dynamic value) =>
       value == null ? null : DateTime.tryParse(value.toString());

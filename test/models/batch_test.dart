@@ -76,6 +76,11 @@ void main() {
       expect(batch.firstTransactionDate, isNull);
     });
 
+    test('Batch-Beträge mit Komma', () {
+      final batch = Batch.fromJson(_batchMap()..['saleAmount'] = '95,50');
+      expect(batch.saleAmountCents, 9550);
+    });
+
     test('compareTo sortiert nach Datum', () {
       final older = Batch.fromJson(_batchMap()..['date'] = '2026-05-18T20:00:00.000Z');
       final newer = Batch.fromJson(_batchMap());

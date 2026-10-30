@@ -6,6 +6,7 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 import 'package:gptom_aidl_plugin/gptom_result_code.dart';
 import 'package:gptom_aidl_plugin/models/batch.dart';
+import 'package:gptom_aidl_plugin/src/cents_parser.dart';
 import 'package:url_launcher/url_launcher.dart';
 import 'enums/preferable_receipt_type.dart';
 import 'enums/transaction_methode.dart';
@@ -328,12 +329,8 @@ class GptomAidlPluginIOS {
       status != null && _cancelledStatuses.contains(status.toUpperCase());
 
   /// Receipt-Beträge liefert GPTom als Euro-Dezimalwerte (z. B. "4.35").
-  static int? _centsFromReceipt(dynamic value) {
-    if (value == null) return null;
-    final parsed = double.tryParse(value.toString());
-    if (parsed == null) return null;
-    return (parsed * 100).round();
-  }
+  /// Punkt oder Komma, ohne Fließkomma-Rechnung.
+  static int? _centsFromReceipt(dynamic value) => centsFromDecimal(value);
 
   /// GP tom liefert `result` teils als Zahl, teils als String.
   static int? _intFromReceipt(dynamic value) {
