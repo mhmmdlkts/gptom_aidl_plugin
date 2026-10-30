@@ -69,13 +69,18 @@ class GptomAidlPlugin {
   /// Holt einen Redirect ab, für den es keinen wartenden Aufruf gab
   /// (Kaltstart oder verspäteter Redirect) und entfernt ihn aus dem Puffer.
   ///
-  /// Mit [requestId] (der vor dem Aufruf gespeicherten Vorgangskennung, siehe
-  /// [neueVorgangsId]) den Redirect mit genau diesem Token – er gilt dann als
-  /// bestätigt, auch nach einem Kaltstart. Sonst mit [originReferenceNum]
-  /// gezielt zur gemerkten Zahlung; ein solcher Redirect ist nur bestätigt
-  /// ([GptomPendingRedirect.isVerified]), wenn sein Token in diesem Prozess
-  /// vergeben wurde. Unbestätigte Redirects ergeben nie Erfolg, sondern
-  /// [GptomResultCode.unverified].
+  /// Mit [requestId] den Redirect mit genau diesem Token – er gilt dann als
+  /// bestätigt, auch nach einem Kaltstart. [requestId] muss aus dem eigenen
+  /// Speicher der Kasse stammen (mit [neueVorgangsId] erzeugt und **vor** dem
+  /// Aufruf gesichert, eine je Zahlungsversuch, nie wiederverwendet), **nie**
+  /// aus einem Redirect oder einem Ergebnis: Sonst bestätigt die Kasse eine
+  /// Fälschung mit deren eigenem Token. Das Plugin gibt bei unbestätigten
+  /// Redirects deshalb keine Kennung heraus.
+  ///
+  /// Sonst mit [originReferenceNum] gezielt zur gemerkten Zahlung; ein
+  /// solcher Redirect ist nur bestätigt ([GptomPendingRedirect.isVerified]),
+  /// wenn sein Token in diesem Prozess vergeben wurde. Unbestätigte Redirects
+  /// ergeben nie Erfolg, sondern [GptomResultCode.unverified].
   GptomPendingRedirect? pendingRedirect({String? originReferenceNum, String? requestId}) {
     return GptomAidlPluginIOS.pendingRedirect(
       originReferenceNum: originReferenceNum,
@@ -95,9 +100,10 @@ class GptomAidlPlugin {
       GptomAidlPluginPlatform.instance.lateTransactionResultStream;
 
   /// Erzeugt eine Vorgangskennung für [sell] und [voidSell] (iOS): 32
-  /// Hex-Zeichen aus `Random.secure`. Die Kasse speichert sie **vor** dem
-  /// Aufruf; nach einem Kaltstart bestätigt sie damit den Redirect
-  /// ([pendingRedirect] mit `requestId`).
+  /// Hex-Zeichen aus `Random.secure`. Eine je Zahlungsversuch, nie
+  /// wiederverwenden. Die Kasse speichert sie **vor** dem Aufruf; nach einem
+  /// Kaltstart bestätigt sie damit den Redirect ([pendingRedirect] mit
+  /// `requestId` aus diesem Speicher, nie aus einem Redirect oder Ergebnis).
   static String neueVorgangsId() => GptomAidlPluginIOS.neueVorgangsId();
 
   /// Erzeugt eine Referenz für die Zuordnung eines iOS-Redirects.
@@ -233,11 +239,13 @@ class GptomAidlPlugin {
   /// erzeugt ([neueReferenz]).
   ///
   /// [requestId] (nur iOS, auf Android ignoriert) ist die Vorgangskennung
-  /// aus [neueVorgangsId]. Sie sichert den Redirect gegen Fälschung ab und
-  /// steht immer in `RequestResult.requestId`, auch bei Timeout. Ohne Angabe
-  /// erzeugt das Plugin eine; nach einem Kaltstart ist sie dann verloren.
-  /// Ein Wert, der nicht aus 32 Hex-Zeichen (klein) besteht, wirft
-  /// [ArgumentError].
+  /// aus [neueVorgangsId], eine je Zahlungsversuch, nie wiederverwendet. Sie
+  /// sichert den Redirect gegen Fälschung ab und steht im Ergebnis dieses
+  /// Aufrufs in `RequestResult.requestId`, auch bei Timeout. Ohne Angabe
+  /// erzeugt das Plugin eine; nach einem Kaltstart ist sie dann verloren –
+  /// zum Nachfragen ([pendingRedirect], `transactionDetailIOS`) taugt nur die
+  /// vor dem Aufruf gespeicherte Kennung. Ein Wert, der nicht aus 32
+  /// Hex-Zeichen (klein) besteht, wirft [ArgumentError].
   Future<RequestResult> sell({
     String? transactionIdAndroid,
     required int amountCents,

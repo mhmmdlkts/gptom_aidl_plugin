@@ -20,12 +20,14 @@ import 'models/request_result.dart';
 /// GP tom vorn war) oder ein verspäteter Redirect einer früheren Zahlung.
 ///
 /// Die App holt ihn mit [GptomAidlPluginIOS.pendingRedirect] ab: am
-/// sichersten über die gespeicherte `requestId` (bestätigt den Redirect auch
-/// nach einem Kaltstart), sonst über [originReferenceNum].
+/// sichersten über die `requestId` aus ihrem eigenen Speicher (vor dem
+/// Aufruf gesichert; bestätigt den Redirect auch nach einem Kaltstart),
+/// sonst über [originReferenceNum].
 ///
 /// Ein unbestätigter Redirect ([isVerified] == false) kann gefälscht sein –
-/// jeder kann `<scheme>://redirect?status=COMPLETED` öffnen. Er ergibt
-/// deshalb nie Erfolg, sondern [GptomResultCode.unverified].
+/// jeder kann `<scheme>://redirect?status=COMPLETED` öffnen, auch mit einem
+/// selbst gewählten Token im Pfad. Er ergibt deshalb nie Erfolg, sondern
+/// [GptomResultCode.unverified], und gibt keine Vorgangskennung heraus.
 class GptomPendingRedirect {
   /// Der rohe Redirect, wie GP tom ihn geschickt hat.
   final Uri uri;
@@ -45,9 +47,16 @@ class GptomPendingRedirect {
   /// also genau der Wert, den die App bei `sell` mitgegeben hat.
   String? get originReferenceNum => GptomAidlPluginIOS.referenceFromRedirect(uri);
 
-  /// Token aus dem Redirect-Pfad. Bei Verkauf und Storno ist das die
-  /// Vorgangskennung (`requestId`) des Aufrufs.
-  String? get requestId => GptomAidlPluginIOS.tokenFromRedirect(uri);
+  /// Vorgangskennung (Token aus dem Redirect-Pfad) – nur bei einem
+  /// bestätigten Redirect, sonst `null`.
+  ///
+  /// Bei einem unbestätigten Redirect hat der Absender das Token selbst
+  /// gewählt. Würde es hier herausgegeben, könnte die App es an
+  /// `pendingRedirect(requestId: …)` weiterreichen und damit eine Fälschung
+  /// bestätigen. Die Kennung für `pendingRedirect` stammt deshalb immer aus
+  /// dem eigenen Speicher der App, nie aus einem Redirect oder Ergebnis.
+  String? get requestId =>
+      isVerified ? GptomAidlPluginIOS.tokenFromRedirect(uri) : null;
 
   /// `TASK_STATUS` aus dem Redirect (COMPLETED, CANCELED, ERROR).
   String? get status => uri.queryParameters['status'];
@@ -78,7 +87,10 @@ class GptomPendingRedirect {
 
   /// Der Inhalt des Redirects wird gar nicht erst ausgewertet: Ein
   /// gefälschter Link mit erratbarer Rechnungsnummer darf nichts als bezahlt
-  /// verbuchen. Die Kasse klärt den Fall über die `requestId`.
+  /// verbuchen. Bewusst ohne `requestId` – das Token im Pfad hat der
+  /// Absender gewählt. Die Kasse klärt den Fall mit der Vorgangskennung aus
+  /// ihrem eigenen Speicher (`pendingRedirect(requestId: …)` bzw.
+  /// `transactionDetailIOS`).
   RequestResult _unbestaetigt() => RequestResult(
         result: GptomResultCode.unverified,
         responseMessage: 'Redirect nicht bestätigt',
@@ -86,7 +98,6 @@ class GptomPendingRedirect {
           errorCode: GptomErrorCode.unverified,
           result: GptomResultCode.unverified,
         ),
-        requestId: requestId,
       );
 
   @override
@@ -167,6 +178,7 @@ class GptomAidlPluginIOS {
 
   /// Erzeugt eine Vorgangskennung bzw. ein Redirect-Token: 32 Hex-Zeichen
   /// (klein) aus [Random.secure]. Ein Angreifer kann sie nicht erraten.
+  /// Eine Kennung je Zahlungsversuch, nie wiederverwenden.
   static String neueVorgangsId() {
     final buffer = StringBuffer();
     for (var i = 0; i < 16; i++) {
@@ -362,10 +374,14 @@ class GptomAidlPluginIOS {
 
   /// Holt einen unzugeordneten Redirect ab und entfernt ihn aus dem Puffer.
   ///
-  /// Mit [requestId] (der vor dem Aufruf gespeicherten Vorgangskennung) den
-  /// Redirect mit genau diesem Token. Er gilt als bestätigt
-  /// ([GptomPendingRedirect.isVerified]), auch nach einem Kaltstart – nur
-  /// GP tom kennt die Kennung. [originReferenceNum] wird dann nicht beachtet.
+  /// Mit [requestId] den Redirect mit genau diesem Token. Er gilt als
+  /// bestätigt ([GptomPendingRedirect.isVerified]), auch nach einem
+  /// Kaltstart. Das ist nur sicher, weil [requestId] aus dem eigenen Speicher
+  /// der App stammt (vor dem Aufruf gesichert, eine Kennung je
+  /// Zahlungsversuch, nie wiederverwendet) – nie aus einem Redirect oder
+  /// einem Ergebnis. Unbestätigte Einträge und ihre Ergebnisse geben das
+  /// Token deshalb gar nicht erst heraus. [originReferenceNum] wird dann
+  /// nicht beachtet.
   ///
   /// Sonst mit [originReferenceNum] gezielt den Redirect zu einer gemerkten
   /// Zahlung, ohne Angabe den ältesten; `isVerified` bleibt dabei, wie es
@@ -379,7 +395,9 @@ class GptomAidlPluginIOS {
     if (requestId != null) {
       for (var i = 0; i < _pendingRedirects.length; i++) {
         final offen = _pendingRedirects[i];
-        if (offen.requestId == requestId) {
+        // Das rohe Token aus dem Pfad: der Eintrag ist ja (noch) unbestätigt,
+        // sein `requestId`-Getter liefert dann `null`.
+        if (tokenFromRedirect(offen.uri) == requestId) {
           _pendingRedirects.removeAt(i);
           return GptomPendingRedirect(offen.uri, offen.receivedAt, isVerified: true);
         }
@@ -853,7 +871,8 @@ class GptomAidlPluginIOS {
   /// Verkauf über `gptom://transaction/create`.
   ///
   /// [requestId] ist die Vorgangskennung (32 Hex-Zeichen, siehe
-  /// [neueVorgangsId]); ohne Angabe wird eine erzeugt. Sie ist im
+  /// [neueVorgangsId]), eine je Zahlungsversuch und nie wiederverwendet;
+  /// ohne Angabe wird eine erzeugt. Sie ist im
   /// Token-Modus zugleich das Redirect-Token, geht bei `sendRequestIdIOS` als
   /// `requestID` an GP tom und steht in jedem Ergebnis, auch bei Fehlern und
   /// Timeout. Eine ungültige [requestId] wirft [ArgumentError].

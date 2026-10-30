@@ -169,6 +169,7 @@ void main() {
       final alsVerkauf = gepuffert.asSellResult();
       expect(alsVerkauf.result, GptomResultCode.unverified);
       expect(alsVerkauf.error?.errorCode, GptomErrorCode.unverified);
+      expect(alsVerkauf.requestId, isNull);
       expect(GptomResultCode.istUnklar(alsVerkauf.result), isTrue);
       expect(gepuffert.asVoidResult().result, GptomResultCode.unverified);
     });
@@ -183,10 +184,11 @@ void main() {
       expect(result.result, GptomResultCode.timeout);
       expect(result.requestId, isNot(fremd));
       final gepuffert = GptomAidlPluginIOS.pendingRedirects.single;
-      expect(gepuffert.requestId, fremd);
       expect(gepuffert.isVerified, isFalse);
+      // Das fremde Token wird nicht herausgegeben.
+      expect(gepuffert.requestId, isNull);
       expect(gepuffert.asSellResult().result, GptomResultCode.unverified);
-      expect(gepuffert.asSellResult().requestId, fremd);
+      expect(gepuffert.asSellResult().requestId, isNull);
     });
 
     test('richtiges Token wird angenommen', () async {
@@ -279,7 +281,9 @@ void main() {
       GptomAidlPluginIOS.debugHandleRedirect(
           Uri.parse('meineapp://redirect/$id?status=COMPLETED&amsID=ams-9'));
       expect(GptomAidlPluginIOS.pendingRedirects.single.isVerified, isFalse);
+      expect(GptomAidlPluginIOS.pendingRedirects.single.requestId, isNull);
 
+      // `id` kommt aus dem Speicher der Kasse, nicht aus dem Redirect.
       final offen = GptomAidlPlugin().pendingRedirect(requestId: id)!;
       expect(offen.isVerified, isTrue);
       expect(offen.requestId, id);
@@ -299,6 +303,51 @@ void main() {
         isNull,
       );
       expect(GptomAidlPluginIOS.pendingRedirects, hasLength(1));
+    });
+
+    test('Fälschung zweimal: keine Vorgangskennung, also keine Bestätigung', () {
+      // Angriff: derselbe gefälschte Link mit selbst gewähltem Token, zweimal.
+      final y = GptomAidlPlugin.neueVorgangsId();
+      final gefaelscht =
+          Uri.parse('meineapp://redirect/$y?status=COMPLETED&amsID=ams-1');
+      GptomAidlPluginIOS.debugHandleRedirect(gefaelscht);
+      GptomAidlPluginIOS.debugHandleRedirect(gefaelscht);
+      for (final offen in GptomAidlPluginIOS.pendingRedirects) {
+        expect(offen.isVerified, isFalse);
+        expect(offen.requestId, isNull);
+      }
+
+      final plugin = GptomAidlPlugin();
+      final erster = plugin.pendingRedirect()!;
+      final ergebnis = erster.asSellResult();
+      expect(ergebnis.result, GptomResultCode.unverified);
+      expect(ergebnis.requestId, isNull);
+      expect(erster.asVoidResult().requestId, isNull);
+
+      // Die Kasse will "über die requestId klären" – aus dem Ergebnis hat sie
+      // keine, die zweite Kopie bleibt unbestätigt.
+      final zweiter = plugin.pendingRedirect(requestId: ergebnis.requestId)!;
+      expect(zweiter.isVerified, isFalse);
+      expect(zweiter.asSellResult().result, GptomResultCode.unverified);
+    });
+
+    test('requestId bestätigt jedes passende Token – sicher nur mit der Kennung '
+        'aus dem Speicher der Kasse', () {
+      // Bewusst so: `pendingRedirect(requestId: y)` prüft nur, ob das Token
+      // passt. Sicher ist das, weil y aus dem Speicher der Kasse stammen muss
+      // (vor dem Aufruf gesichert) – das Plugin gibt das Token eines
+      // unbestätigten Redirects nie heraus, die Kasse kann es also nicht
+      // versehentlich aus einer Fälschung übernehmen.
+      final y = GptomAidlPlugin.neueVorgangsId();
+      GptomAidlPluginIOS.debugHandleRedirect(
+          Uri.parse('meineapp://redirect/$y?status=COMPLETED&amsID=ams-1'));
+      expect(GptomAidlPluginIOS.pendingRedirects.single.requestId, isNull);
+
+      final offen = GptomAidlPluginIOS.pendingRedirect(requestId: y)!;
+      expect(offen.isVerified, isTrue);
+      expect(offen.requestId, y);
+      expect(offen.asSellResult().result, GptomResultCode.success);
+      expect(offen.asSellResult().requestId, y);
     });
 
     test('höchstens 50 Tokens bleiben gemerkt', () async {
