@@ -34,6 +34,9 @@ class RequestResult {
   final String? sequenceNumber;
   final String? terminalID;
 
+  /// Eigene Kennung der Anfrage (iOS `requestID`), falls mitgeschickt.
+  final String? requestId;
+
   // Felder für Fehler:
   final ErrorInfo? error;         // z. B. {"errorCode":"1-097",...}
 
@@ -70,6 +73,7 @@ class RequestResult {
     this.transactionType,
     this.sequenceNumber,
     this.terminalID,
+    this.requestId,
     this.error,
   });
 
@@ -187,6 +191,7 @@ class RequestResult {
       'transactionType': transactionType?.id,
       'transacitonType': transactionType?.id,
       'sequenceNumber': sequenceNumber,
+      if (requestId != null) 'requestId': requestId,
     };
   }
 }

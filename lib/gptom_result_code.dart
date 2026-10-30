@@ -36,10 +36,14 @@ class GptomResultCode {
   /// Abbruch durch Kassier oder Kunde (iOS: `TASK_STATUS=CANCELED`).
   static const int cancelled = -1006;
 
+  /// Die Zahlung ließ sich nicht eindeutig zuordnen bzw. prüfen (zum Beispiel
+  /// Redirect ohne gültiges Token). Die Karte kann belastet sein.
+  static const int unverified = -1007;
+
   /// Ausgänge, bei denen die Karte belastet sein KANN. Die App muss hier
   /// nachfragen (Android: `stateRequest`/`inquireTransaction`, iOS: den
   /// gepufferten Redirect) statt die Zahlung zu wiederholen.
-  static const Set<int> unklar = {timeout, noReceipt, parseError, exception};
+  static const Set<int> unklar = {timeout, noReceipt, parseError, exception, unverified};
 
   /// Ausgänge, bei denen sicher nichts belastet wurde – nur diese darf die
   /// App gefahrlos wiederholen.
@@ -63,4 +67,5 @@ class GptomErrorCode {
   static const String parseError = 'PARSE_ERROR';
   static const String cancelled = 'CANCELLED';
   static const String declined = 'DECLINED';
+  static const String unverified = 'UNVERIFIED';
 }

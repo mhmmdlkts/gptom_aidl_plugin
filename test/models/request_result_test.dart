@@ -146,4 +146,10 @@ void main() {
       expect(zurueck.transactionType, TransactionType.sell);
     });
   });
+
+  test('requestId erscheint in toMap nur, wenn gesetzt', () {
+    expect(RequestResult(result: 0).toMap().containsKey('requestId'), isFalse);
+    expect(RequestResult(result: 0, requestId: 'r-1').toMap()['requestId'],
+        'r-1');
+  });
 }

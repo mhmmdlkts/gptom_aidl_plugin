@@ -64,4 +64,10 @@ void main() {
     // Android-Wächter und iOS-Zeitablauf melden denselben Code.
     expect(GptomErrorCode.timeout, 'TIMEOUT');
   });
+
+  test('unverified (-1007) ist unklar und nicht ohne Belastung', () {
+    expect(GptomResultCode.istUnklar(-1007), isTrue);
+    expect(GptomResultCode.istOhneBelastung(-1007), isFalse);
+    expect(GptomErrorCode.unverified, 'UNVERIFIED');
+  });
 }
