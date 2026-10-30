@@ -14,10 +14,10 @@ class InquireResult {
   /// approvedCode: z. B. "529625" bei Erfolg
   final String? approvedCode;
 
-  /// merchantID: z. B. "000007311211351"
+  /// merchantID: z. B. "000001234567890"
   final String? merchantID;
 
-  /// terminalID: z. B. "11263520"
+  /// terminalID: z. B. "12345678"
   final String? terminalID;
 
   /// amount in Cent (z. B. 1111 => 11,11 EUR)

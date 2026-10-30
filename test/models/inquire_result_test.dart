@@ -15,8 +15,8 @@ void main() {
         'trasanctionID': 'tx-1',
         'transacitonType': 1,
         'approvedCode': '529625',
-        'merchantID': '000007311211351',
-        'terminalID': '11263520',
+        'merchantID': '000001234567890',
+        'terminalID': '12345678',
         'amount': '1111',
         'tipAmount': '0',
         'currencyCode': 'EUR',
@@ -33,7 +33,7 @@ void main() {
       expect(result.amountCents, 1111);
       expect(result.amountEuro, 11.11);
       expect(result.emvAppLable, 'VISA CREDIT');
-      expect(result.terminalID, '11263520');
+      expect(result.terminalID, '12345678');
     });
 
     test('verträgt fehlende trasanctionID und fehlende Beträge', () {

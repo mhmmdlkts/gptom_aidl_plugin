@@ -211,7 +211,7 @@ plugin.loginStatusStream.listen((event) {
 await plugin.loginGpTom(
   username: 'kasse@example.com',
   password: '...',
-  terminalId: '11263520',
+  terminalId: '12345678',
 );
 ```
 

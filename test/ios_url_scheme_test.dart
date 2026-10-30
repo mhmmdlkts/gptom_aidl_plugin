@@ -139,7 +139,7 @@ void main() {
         'authorizationCode': '529625',
         'batchNumber': '42',
         'sequenceNumber': '7',
-        'terminalID': '11263520',
+        'terminalID': '12345678',
         'cardNumber': '7866',
         'cardType': 'VISA',
         'currencyCode': 'EUR',

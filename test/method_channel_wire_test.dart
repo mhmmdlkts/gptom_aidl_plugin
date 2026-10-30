@@ -236,7 +236,7 @@ void main() {
             'tipAmount': '50',
             'totalAmount': '1161',
             'emvAppLable': 'Visa Debit',
-            'cardNumber': '479608******1859',
+            'cardNumber': '411111******1111',
             'responseMessage': 'APPROVED',
             'pinOk': false,
           });
@@ -253,7 +253,7 @@ void main() {
       expect(result.tipAmountCents, 50);
       expect(result.totalAmountCents, 1161);
       expect(result.emvAppLable, 'Visa Debit');
-      expect(result.cardNumber, '479608******1859');
+      expect(result.cardNumber, '411111******1111');
     });
   });
 
@@ -266,7 +266,7 @@ void main() {
       await GptomAidlPlugin().loginGpTom(
         username: 'user@example.com',
         password: 'geheim',
-        terminalId: '11263520',
+        terminalId: '12345678',
       );
 
       final call = nativeCalls.singleWhere((c) => c.method == 'gpTomLogin');
@@ -274,7 +274,7 @@ void main() {
       expect(args, {
         'username': 'user@example.com',
         'password': 'geheim',
-        'terminalId': '11263520',
+        'terminalId': '12345678',
         'authCode': null,
       });
     });

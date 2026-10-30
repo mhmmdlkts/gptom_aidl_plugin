@@ -61,8 +61,8 @@ void main() {
           'appVersion': '2.30.1',
           'isLoggedIn': true,
           'logInStatus': 'LOGGED_IN',
-          'tid': '11263520',
-          'mid': '000007311211351',
+          'tid': '12345678',
+          'mid': '000001234567890',
           'tipEnabled': true,
         }),
       ));
@@ -71,9 +71,9 @@ void main() {
       expect(info.appVersion, '2.30.1');
       expect(info.isLoggedIn, isTrue);
       expect(info.logInStatus, 'LOGGED_IN');
-      expect(info.tid, '11263520');
+      expect(info.tid, '12345678');
       expect(info.tipEnabled, isTrue);
-      expect(info.raw['mid'], '000007311211351');
+      expect(info.raw['mid'], '000001234567890');
     });
 
     test('onLateTransactionResult landet im lateTransactionResultStream', () async {
