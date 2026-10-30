@@ -1,3 +1,10 @@
+## 0.3.1
+
+* **Fix iOS:** Bei Verkauf, Storno und Rückerstattung ohne Beleg und ohne
+  Erfolgs-Status steht der `error`-Wert von GP tom (z. B. `userNotLoggedIn`)
+  jetzt in `error.errorCode`, damit die App den echten Grund sieht. Fehlt er
+  oder ist er leer, bleibt es bei `NO_RECEIPT`. Der Ergebniscode bleibt −1004.
+
 ## 0.3.0
 
 **Verhaltensänderungen – bitte vor dem Update lesen**

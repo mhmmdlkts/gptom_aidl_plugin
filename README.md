@@ -481,7 +481,7 @@ Zusätzliche Plugin-interne Codes (nur clientseitig, kommen nicht von GP tom):
 | -1001 | Antwort fehlte oder war nicht parsebar |
 | -1002 | GP tom App konnte nicht geöffnet werden (iOS) |
 | -1003 | Keine Antwort binnen der Frist (iOS: kein Redirect, Android: Wächter) |
-| -1004 | Redirect ohne Receipt und ohne Erfolgs-Status (iOS); bei `transactionDetailIOS` jeder Redirect ohne Beleg, auch mit `COMPLETED` (`error.errorCode` = `error` von GP tom, falls vorhanden) |
+| -1004 | Redirect ohne Receipt und ohne Erfolgs-Status (iOS; `error.errorCode` = `error` von GP tom, falls vorhanden, sonst `NO_RECEIPT`); bei `transactionDetailIOS` jeder Redirect ohne Beleg, auch mit `COMPLETED` (`error.errorCode` = `error` von GP tom, falls vorhanden) |
 | -1005 | Beleg im Redirect nicht lesbar (iOS) |
 | -1006 | Abbruch durch Kassier oder Kunde (iOS, `TASK_STATUS=CANCELED`) |
 | -1007 | Redirect ohne gültiges Token, nicht bestätigt (iOS); klären mit `pendingRedirect(requestId:)` bzw. `transactionDetailIOS` |

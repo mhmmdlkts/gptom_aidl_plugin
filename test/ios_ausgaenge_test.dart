@@ -388,4 +388,26 @@ void main() {
       expect(offen.asSellResult().transactionId, 'ams-1');
     });
   });
+
+  group('Redirect ohne Beleg und ohne Erfolgs-Status', () {
+    test('Status ERROR mit GP-tom-Fehler: errorCode ist der GP-tom-Wert', () {
+      final uri = Uri.parse('meineapp://redirect?status=ERROR&error=userNotLoggedIn');
+      for (final r in [
+        GptomAidlPluginIOS.requestResultFromCreateRedirect(uri, printByPaymentApp: false),
+        GptomAidlPluginIOS.requestResultFromCancelRedirect(uri, printByPaymentApp: false),
+        GptomAidlPluginIOS.requestResultFromRefundRedirect(uri, printByPaymentApp: false),
+      ]) {
+        expect(r.result, GptomResultCode.noReceipt);
+        expect(r.error?.errorCode, 'userNotLoggedIn');
+        expect(r.responseMessage, 'ERROR');
+      }
+    });
+
+    test('leerer error-Wert: NO_RECEIPT', () {
+      final r = GptomAidlPluginIOS.requestResultFromCreateRedirect(
+          Uri.parse('meineapp://redirect?status=ERROR&error='),
+          printByPaymentApp: false);
+      expect(r.error?.errorCode, GptomErrorCode.noReceipt);
+    });
+  });
 }

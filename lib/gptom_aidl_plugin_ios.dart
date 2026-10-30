@@ -796,10 +796,14 @@ class GptomAidlPluginIOS {
         );
       }
       // Kein Beleg und kein Erfolgs-Status → unklar/kein Abschluss. Den
-      // Status durchreichen, damit die App den echten Grund sieht.
+      // Status durchreichen, damit die App den echten Grund sieht; ein
+      // `error` von GP tom (z. B. „userNotLoggedIn“) steht in `errorCode`.
+      final gpTomFehler = query['error'];
       return _pluginFehler(
         GptomResultCode.noReceipt,
-        GptomErrorCode.noReceipt,
+        gpTomFehler != null && gpTomFehler.isNotEmpty
+            ? gpTomFehler
+            : GptomErrorCode.noReceipt,
         status ?? 'Kein Receipt enthalten',
         requestId: requestId,
       );
