@@ -10,6 +10,7 @@ import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 import static org.robolectric.Shadows.shadowOf;
@@ -17,8 +18,10 @@ import static org.robolectric.Shadows.shadowOf;
 import android.app.Application;
 import android.content.ComponentName;
 import android.content.Context;
+import android.content.ContextWrapper;
 import android.content.Intent;
 import android.content.IntentFilter;
+import android.content.ServiceConnection;
 import android.content.pm.ApplicationInfo;
 import android.content.pm.PackageInfo;
 import android.content.pm.ResolveInfo;
@@ -40,6 +43,7 @@ import org.robolectric.annotation.Config;
 import org.robolectric.shadows.ShadowSigningInfo;
 
 import java.lang.reflect.Field;
+import java.time.Duration;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.HashMap;
@@ -485,6 +489,57 @@ public class GptomTrustTest {
     pruefeIsDevWechsel("bindInfoService");
 
     verify(info).unregisterCallback(any());
+  }
+
+  // ---------------------------------------------------------------------------
+  // Bind-Wächter
+  // ---------------------------------------------------------------------------
+
+  /** Hängt das Plugin an einen anderen Kontext (ersetzt das aus setUp). */
+  private void pluginMitKontext(Context kontext) {
+    plugin = new GptomAidlPlugin();
+    FlutterPlugin.FlutterPluginBinding binding = mock(FlutterPlugin.FlutterPluginBinding.class);
+    when(binding.getApplicationContext()).thenReturn(kontext);
+    when(binding.getBinaryMessenger()).thenReturn(mock(BinaryMessenger.class));
+    plugin.onAttachedToEngine(binding);
+  }
+
+  @Test
+  public void bindWaechter_haengenderBindNachIsDevWechsel_antwortetFalseGenauEinmal() {
+    installiereGpTom(PROD, ZERT_A);
+    installiereGpTom(DEV, ZERT_A);
+    dienstVerfuegbar(mock(ISmartconnectService.class));
+    // Prod nimmt den Bind an, meldet sich aber nie (onServiceConnected bleibt aus).
+    // Robolectric selbst ruft onServiceConnected immer auf, deshalb der Wrapper.
+    pluginMitKontext(new ContextWrapper(app()) {
+      @Override
+      public boolean bindService(Intent service, ServiceConnection conn, int flags) {
+        if (PROD.equals(zielpaket(service))) {
+          return true;
+        }
+        return super.bindService(service, conn, flags);
+      }
+    });
+    List<String> pins = Collections.singletonList(FP_A);
+
+    MethodChannel.Result erster = mock(MethodChannel.Result.class);
+    plugin.onMethodCall(new MethodCall("bindService", bindArgs(false, pins)), erster);
+    idleMainLooper();
+    verify(erster, never()).success(any());
+
+    // Wechsel auf DEV, der neue Bind verbindet sofort.
+    MethodChannel.Result zweiter = mock(MethodChannel.Result.class);
+    plugin.onMethodCall(new MethodCall("bindService", bindArgs(true, pins)), zweiter);
+    idleMainLooper();
+    verify(zweiter).success(true);
+    // Der verworfene Bind wird sofort beantwortet, nicht erst vom Wächter.
+    verify(erster).success(false);
+
+    // Nach Ablauf des Wächters: weiterhin genau eine Antwort.
+    shadowOf(Looper.getMainLooper()).idleFor(Duration.ofMillis(6000));
+    verify(erster, times(1)).success(any());
+    verify(erster, times(1)).success(false);
+    verify(zweiter, times(1)).success(any());
   }
 
   // ---------------------------------------------------------------------------

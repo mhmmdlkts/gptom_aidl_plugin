@@ -109,6 +109,12 @@ public class GptomAidlPlugin implements FlutterPlugin, MethodChannel.MethodCallH
   private String paymentConnectionPackage;
   private String loginConnectionPackage;
   private String infoConnectionPackage;
+  // Wächter des zuletzt angestoßenen Binds je Verbindung. Wird die
+  // Verbindung verworfen, beantwortet er den offenen Aufruf sofort mit false.
+  // War der Aufruf schon beantwortet, ist er wirkungslos (SingleResult).
+  private Runnable paymentBindWatchdog;
+  private Runnable loginBindWatchdog;
+  private Runnable infoBindWatchdog;
   // Prüfvorgaben des letzten Payment-Binds, gebraucht vor openGptomUI.
   private List<String> paymentPins = Collections.emptyList();
   private boolean paymentVerify = true;
@@ -506,6 +512,17 @@ public class GptomAidlPlugin implements FlutterPlugin, MethodChannel.MethodCallH
     }
   }
 
+  /**
+   * Beantwortet einen noch offenen Bind sofort mit false, weil seine
+   * Verbindung verworfen wird. War er schon beantwortet, passiert nichts.
+   */
+  private void answerPendingBind(Runnable bindWatchdog) {
+    if (bindWatchdog != null) {
+      mainHandler.removeCallbacks(bindWatchdog);
+      bindWatchdog.run();
+    }
+  }
+
   // ---------------------------------------------------------------------------
   // PAYMENT SERVICE (ISmartconnectService)
   // ---------------------------------------------------------------------------
@@ -532,22 +549,14 @@ public class GptomAidlPlugin implements FlutterPlugin, MethodChannel.MethodCallH
       Intent intent = new Intent();
       intent.setComponent(new ComponentName(pkg, PAYMENT_SERVICE_CLASS));
 
-      if (serviceConnection != null) {
-        try {
-          applicationContext.unbindService(serviceConnection);
-        } catch (Exception ignored) {
-        }
-        serviceConnection = null;
-      }
+      // Hängende oder getrennte alte Verbindung verwerfen.
+      unbindPaymentService();
 
       // bindService() liefert nur "Anfrage angenommen" – verbunden sind wir
       // erst bei onServiceConnected. Falls die Verbindung nie zustande kommt,
-      // nicht ewig hängen lassen.
-      final Runnable bindWatchdog = () -> {
-        if (gptomService == null) {
-          result.success(false);
-        }
-      };
+      // nicht ewig hängen lassen. Der Wächter antwortet immer für genau diesen
+      // Aufruf; nach onServiceConnected ist er entfernt bzw. wirkungslos.
+      final Runnable bindWatchdog = () -> result.success(false);
 
       paymentConnectionPackage = pkg;
       serviceConnection = new ServiceConnection() {
@@ -580,6 +589,7 @@ public class GptomAidlPlugin implements FlutterPlugin, MethodChannel.MethodCallH
         return;
       }
 
+      paymentBindWatchdog = bindWatchdog;
       mainHandler.postDelayed(bindWatchdog, BIND_TIMEOUT_MS);
     } catch (Exception e) {
       result.error("BIND_ERROR", e.getMessage());
@@ -587,6 +597,8 @@ public class GptomAidlPlugin implements FlutterPlugin, MethodChannel.MethodCallH
   }
 
   private void unbindPaymentService() {
+    answerPendingBind(paymentBindWatchdog);
+    paymentBindWatchdog = null;
     if (serviceConnection != null) {
       try {
         applicationContext.unbindService(serviceConnection);
@@ -794,19 +806,10 @@ public class GptomAidlPlugin implements FlutterPlugin, MethodChannel.MethodCallH
         return;
       }
 
-      if (loginServiceConnection != null) {
-        try {
-          applicationContext.unbindService(loginServiceConnection);
-        } catch (Exception ignored) {
-        }
-        loginServiceConnection = null;
-      }
+      // Hängende oder getrennte alte Verbindung verwerfen.
+      unbindLoginService();
 
-      final Runnable bindWatchdog = () -> {
-        if (loginService == null) {
-          result.success(false);
-        }
-      };
+      final Runnable bindWatchdog = () -> result.success(false);
 
       loginConnectionPackage = pkg;
       loginServiceConnection = new ServiceConnection() {
@@ -844,6 +847,7 @@ public class GptomAidlPlugin implements FlutterPlugin, MethodChannel.MethodCallH
         return;
       }
 
+      loginBindWatchdog = bindWatchdog;
       mainHandler.postDelayed(bindWatchdog, BIND_TIMEOUT_MS);
     } catch (Exception e) {
       result.error("BIND_ERROR", e.getMessage());
@@ -851,6 +855,8 @@ public class GptomAidlPlugin implements FlutterPlugin, MethodChannel.MethodCallH
   }
 
   private void unbindLoginService() {
+    answerPendingBind(loginBindWatchdog);
+    loginBindWatchdog = null;
     if (loginServiceConnection != null) {
       try {
         if (loginService != null) {
@@ -954,19 +960,10 @@ public class GptomAidlPlugin implements FlutterPlugin, MethodChannel.MethodCallH
         return;
       }
 
-      if (infoServiceConnection != null) {
-        try {
-          applicationContext.unbindService(infoServiceConnection);
-        } catch (Exception ignored) {
-        }
-        infoServiceConnection = null;
-      }
+      // Hängende oder getrennte alte Verbindung verwerfen.
+      unbindInfoService();
 
-      final Runnable bindWatchdog = () -> {
-        if (infoService == null) {
-          result.success(false);
-        }
-      };
+      final Runnable bindWatchdog = () -> result.success(false);
 
       infoConnectionPackage = pkg;
       infoServiceConnection = new ServiceConnection() {
@@ -1004,6 +1001,7 @@ public class GptomAidlPlugin implements FlutterPlugin, MethodChannel.MethodCallH
         return;
       }
 
+      infoBindWatchdog = bindWatchdog;
       mainHandler.postDelayed(bindWatchdog, BIND_TIMEOUT_MS);
     } catch (Exception e) {
       result.error("BIND_ERROR", e.getMessage());
@@ -1011,6 +1009,8 @@ public class GptomAidlPlugin implements FlutterPlugin, MethodChannel.MethodCallH
   }
 
   private void unbindInfoService() {
+    answerPendingBind(infoBindWatchdog);
+    infoBindWatchdog = null;
     if (infoServiceConnection != null) {
       try {
         if (infoService != null) {
