@@ -5,7 +5,6 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:gptom_aidl_plugin/gptom_account.dart';
 import 'package:gptom_aidl_plugin/gptom_aidl_plugin.dart';
 import 'package:gptom_aidl_plugin/gptom_aidl_plugin_ios.dart';
-import 'package:gptom_aidl_plugin/models/gptom_info.dart';
 import 'package:gptom_aidl_plugin/models/login_status.dart';
 import 'package:gptom_aidl_plugin/testing.dart';
 

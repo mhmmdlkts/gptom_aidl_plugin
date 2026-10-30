@@ -148,6 +148,10 @@ class _RedirectWaiter {
 class GptomAidlPluginIOS {
 
   /// Roher Strom aller Redirects auf das eigene App-Scheme.
+  ///
+  /// Achtung: Der Strom führt auch gefälschte Redirects (jede App kann
+  /// `<scheme>://redirect/...` öffnen). Daraus **nie** Zahlungen verbuchen;
+  /// dafür gibt es `sell` und `pendingRedirect(requestId:)`.
   static final StreamController<Uri> gptomRedirectStream = StreamController<Uri>.broadcast();
   static AppLinks? _appLinks;
   static StreamSubscription<Uri>? _redirectSubscription;

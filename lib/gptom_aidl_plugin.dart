@@ -28,6 +28,7 @@ export 'gptom_aidl_plugin_ios.dart' show GptomPendingRedirect;
 export 'gptom_result_code.dart';
 export 'gptom_security.dart';
 export 'models/gptom_app_check.dart';
+export 'models/gptom_info.dart';
 export 'models/gptom_login.dart'
     show GptomCredentials, GptomLoginOutcome, GptomLoginResult, GptomLoginState;
 
@@ -280,6 +281,8 @@ class GptomAidlPlugin {
   /// zum Nachfragen ([pendingRedirect], `transactionDetailIOS`) taugt nur die
   /// vor dem Aufruf gespeicherte Kennung. Ein Wert, der nicht aus 32
   /// Hex-Zeichen (klein) besteht, wirft [ArgumentError].
+  ///
+  /// [paymentMethod] gibt es nur auf Android; auf iOS wird es ignoriert.
   Future<RequestResult> sell({
     String? transactionIdAndroid,
     required int amountCents,
@@ -544,8 +547,10 @@ class GptomAidlPlugin {
   // Anmeldung, Status und Absicherung (Android und iOS)
   // ---------------------------------------------------------------------------
   /// Sicherheitseinstellungen (Signaturprüfung auf Android, Token in der
-  /// iOS-Redirect-URL, Notschalter). Einmal beim App-Start setzen; zur
-  /// Laufzeit änderbar, z. B. aus einer Fernkonfiguration.
+  /// iOS-Redirect-URL, Notschalter). Einmal beim App-Start setzen, **vor**
+  /// dem ersten GP-tom-Aufruf. Ein Wechsel zur Laufzeit mischt das Verhalten:
+  /// laufende Aufrufe und bereits vergebene Tokens bzw. gemerkte
+  /// Fingerprints richten sich noch nach der alten Einstellung.
   static GptomSecurityConfig get security => GptomSecurityConfig.current;
 
   /// Ein ungültiger Fingerprint in `trustedSignaturesAndroid` wirft sofort
@@ -601,6 +606,10 @@ class GptomAidlPlugin {
   /// `gptom://`-URL; die App wechselt zu GP tom und zurück.
   ///
   /// Läuft schon eine Konto-Operation: [GptomLoginOutcome.busy].
+  ///
+  /// Android: Die Login-Ereignisse tragen keine Vorgangskennung. Trifft ein
+  /// Ereignis erst nach einem Timeout ein, kann es die nächste Operation
+  /// derselben Art fälschlich beenden.
   Future<GptomLoginResult> login(
     GptomCredentials credentials, {
     String? authCode,
@@ -616,6 +625,10 @@ class GptomAidlPlugin {
   }
 
   /// Meldet GP tom ab und wartet auf den Ausgang (Standard 60 s).
+  ///
+  /// Android: Die Ereignisse tragen keine Vorgangskennung. Trifft ein
+  /// Ereignis erst nach einem Timeout ein, kann es die nächste Operation
+  /// derselben Art fälschlich beenden.
   Future<GptomLoginResult> logout({bool isDevAndroid = false, Duration? timeout}) {
     return _konto.logout(isDevAndroid: isDevAndroid, timeout: timeout);
   }
@@ -625,6 +638,10 @@ class GptomAidlPlugin {
   /// [GptomLoginOutcome.passwordPendingConfirmation]), dann mit [code]
   /// ([GptomLoginOutcome.passwordChanged]). [username] und [terminalId]
   /// braucht nur iOS.
+  ///
+  /// Android: Die Ereignisse tragen keine Vorgangskennung. Trifft ein
+  /// Ereignis erst nach einem Timeout ein, kann es die nächste Operation
+  /// derselben Art fälschlich beenden.
   Future<GptomLoginResult> changePassword({
     required String username,
     required String currentPassword,
@@ -653,7 +670,9 @@ class GptomAidlPlugin {
   /// aufgerufen, wenn wirklich angemeldet werden muss – so wird das Passwort
   /// nur bei Bedarf gelesen. Liefert es `null`, ist der Ausgang
   /// [GptomLoginOutcome.noCredentials]; Exceptions daraus werden
-  /// weitergereicht.
+  /// weitergereicht. Der Rückruf muss **immer** zu Ende kommen (auch im
+  /// Fehlerfall); solange er läuft, melden andere Konto-Operationen
+  /// [GptomLoginOutcome.busy].
   ///
   /// Ausgänge: [GptomLoginOutcome.alreadyLoggedIn] (angemeldet, TID passt zu
   /// [expectedTerminalId], Vergleich ohne Leerzeichen am Rand),

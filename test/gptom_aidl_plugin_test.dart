@@ -6,7 +6,6 @@ import 'package:gptom_aidl_plugin/enums/transaction_methode.dart';
 import 'package:gptom_aidl_plugin/enums/transaction_type.dart';
 import 'package:gptom_aidl_plugin/gptom_aidl_plugin.dart';
 import 'package:gptom_aidl_plugin/gptom_aidl_plugin_platform_interface.dart';
-import 'package:gptom_aidl_plugin/models/gptom_info.dart';
 import 'package:gptom_aidl_plugin/models/inquire_result.dart';
 import 'package:gptom_aidl_plugin/models/login_status.dart';
 import 'package:gptom_aidl_plugin/models/register_result.dart';

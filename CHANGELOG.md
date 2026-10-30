@@ -1,3 +1,78 @@
+## 0.3.0
+
+**Verhaltensänderungen – bitte vor dem Update lesen**
+
+* **iOS, unbestätigte Redirects:** Ein Redirect ohne gültiges Token ergibt
+  nie Erfolg, sondern `-1007` (`GptomResultCode.unverified`, `istUnklar`,
+  `error.errorCode == 'UNVERIFIED'`) und gibt keine Vorgangskennung heraus.
+  Damit kann ein von außen geöffneter Link `meineapp://redirect?status=COMPLETED`
+  keine Zahlung mehr als bezahlt melden. Nach einem Kaltstart muss die Kasse
+  die vor der Zahlung gespeicherte `requestId` an
+  `pendingRedirect(requestId:)` bzw. `transactionDetailIOS(requestId:)`
+  geben. Zurück zum alten Verhalten: `redirectTokenIOS: false`.
+* **Android, Signaturprüfung:** Vor jedem Zugriff auf die GP tom App wird ihre
+  Signatur geprüft. Bei falscher Signatur sind auch **Zahlungen** gesperrt
+  (nicht nur Login/Status). Ohne konfigurierte Pins gilt „trust on first use“:
+  der erste Aufruf (auch `checkGpTomApp()`) speichert den Fingerprint.
+  Notschalter: `verifySignatureAndroid: false`; Auswege:
+  `resetTrustedSignatureAndroid()` und weitere Fingerprints in
+  `trustedSignaturesAndroid`.
+* **Android, `isDev` je Verbindung:** Payment-, Login- und Info-Service
+  halten `isDev` getrennt; ein Wechsel baut die Verbindung neu auf.
+  `openGptomUI` nutzt das Paket der Payment-Verbindung.
+* **Dev-Paket im Release gesperrt:** In Release-Builds wird das Dev-Paket
+  (`.dev`) abgewiesen (`devPackageBlocked`), außer mit
+  `allowDevPackageInRelease: true`.
+* **Android, Register-Wächter:** `registerTransactionV2Android` antwortet
+  spätestens nach 30 Sekunden (bisher unbegrenzt).
+* **iOS, Redirect-URL:** Der Pfad der `redirectUrl` ist jetzt
+  `<scheme>://redirect/<token>` (vorher `<scheme>://redirect`). Deep-Link-Router
+  der App dürfen diesen Pfad nicht abfangen.
+
+**Neu**
+
+* `login()`, `logout()`, `changePassword()` (zweistufig mit Mail-Code) und
+  `ensureLoggedIn()` (Morgen-Check) auf Android und iOS; sie warten auf den
+  Ausgang und liefern ein `GptomLoginResult` mit `GptomLoginOutcome`
+  (`needsCode`, `isLoggedIn`). `GptomCredentials` (ohne Passwort in
+  `toString()`), `GptomLoginState`. Es läuft eine Konto-Operation zur Zeit,
+  weitere ergeben `busy`.
+* `getStatus()` (Android: Info-Service, iOS: `gptom://status`) mit
+  `GpTomInfo.loginState` und `merchantLocationText`; `GpTomInfo` ist jetzt
+  aus `gptom_aidl_plugin.dart` mit exportiert.
+* `checkGpTomApp()` liefert `GptomAppCheck` (installiert, vertrauenswürdig,
+  `source`, SHA-256-Fingerprint, Version); `resetTrustedSignatureAndroid()`.
+* `GptomAidlPlugin.security` mit `GptomSecurityConfig`
+  (`verifySignatureAndroid`, `trustedSignaturesAndroid`,
+  `allowDevPackageInRelease`, `redirectTokenIOS`, `sendRequestIdIOS`).
+* iOS: Redirect-Token und Vorgangskennung. `GptomAidlPlugin.neueVorgangsId()`,
+  `requestId` bei `sell`/`voidSell`/`refund` (steht in
+  `RequestResult.requestId`, auch bei Timeout),
+  `pendingRedirect(requestId:)`, `GptomPendingRedirect.isVerified`.
+* iOS: `refund()` über `gptom://transaction/refund` und
+  `transactionDetailIOS({amsId, requestId, clientId, timeout})` zur
+  Belegabfrage.
+* `refund(originTransactionId:)` ist optional (Rückerstattung ohne Bezug).
+* `sell(referenz:)` setzt auch auf Android `originReferenceNum`;
+  `referenz` wird auf beiden Plattformen geprüft (höchstens 20 Zeichen, nur
+  ASCII). `sell(paymentMethod:)` und
+  `registerTransactionV2Android(paymentMethod:)` (nur Android).
+* `loginGpTom`, `logoutGpTom` und `changeGpTomPassword` sind `@Deprecated`
+  (ersetzt durch `login`, `logout`, `changePassword`), bleiben aber
+  aufrufbar.
+* Beispiel-App mit Bereich „GP tom Anmeldung“; README um Anmeldung,
+  Sicherheit und Prüfpunkte für echte Geräte erweitert.
+
+**Fix**
+
+* iOS: Beträge im Beleg werden ohne Kommazahlen-Rechnung gelesen, mit Punkt
+  oder Komma als Dezimalzeichen (`"4.35"`, `"4,35"`, `"1.234,50"`).
+* Android: GP-tom-Aufrufe laufen nicht mehr auf dem Main-Thread (zwei
+  getrennte Executoren für Zahlung und Login/Info); `getGpTomInfo` hat einen
+  Wächter von 20 Sekunden.
+* Android: Der Bind-Wächter antwortet in jedem Fall genau einmal.
+* Testdaten enthalten nur noch erfundene Kennungen.
+
 ## 0.2.3
 
 * **Neu (Android, hängende Zahlung):** `requestTransactionV2` hat jetzt einen
