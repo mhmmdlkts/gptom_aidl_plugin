@@ -7,6 +7,7 @@ import 'package:gptom_aidl_plugin/enums/transaction_methode.dart';
 import 'package:gptom_aidl_plugin/enums/transaction_type.dart';
 import 'package:gptom_aidl_plugin/gptom_aidl_plugin.dart';
 import 'package:gptom_aidl_plugin/gptom_aidl_plugin_ios.dart';
+import 'package:gptom_aidl_plugin/gptom_ios_account.dart';
 import 'package:gptom_aidl_plugin/models/batch.dart';
 import 'package:gptom_aidl_plugin/models/request_result.dart';
 
@@ -352,16 +353,21 @@ void main() {
 
     test('höchstens 50 Tokens bleiben gemerkt', () async {
       gpTom(oeffnenGelingt: false);
+      // Zahlungs-Tokens: nur deren späte Redirects kommen bestätigt in den
+      // Puffer (Status & Co. gar nicht).
       Uri bauen(String redirectUrl) => Uri(
             scheme: 'gptom',
-            host: 'status',
+            host: 'transaction',
+            path: 'create',
             queryParameters: {'redirectUrl': redirectUrl},
           );
+      Future<void> zahlung() => GptomAidlPluginIOS.roundtrip(bauen,
+          timeout: const Duration(seconds: 1), zahlung: true);
 
-      await GptomAidlPluginIOS.roundtrip(bauen, timeout: const Duration(seconds: 1));
+      await zahlung();
       final aeltestes = gerufen!;
       for (var i = 0; i < 50; i++) {
-        await GptomAidlPluginIOS.roundtrip(bauen, timeout: const Duration(seconds: 1));
+        await zahlung();
       }
       final juengstes = gerufen!;
 
@@ -371,6 +377,219 @@ void main() {
       final puffer = GptomAidlPluginIOS.pendingRedirects;
       expect(puffer.first.isVerified, isFalse);
       expect(puffer.last.isVerified, isTrue);
+    });
+  });
+
+  group('Späte Redirects ohne Zahlungsbezug', () {
+    // Status, Login, Kassenschnitt & Co. tragen ein eigenes Token. Kommt ihr
+    // Redirect erst nach dem Timeout, darf er nie als Zahlung lesbar werden.
+    test('Status: später Redirect landet nicht im Zahlungspuffer', () async {
+      gpTom();
+      final st = await GptomIosAccount.status(
+          timeout: const Duration(milliseconds: 20));
+      expect(st.fehler, GptomLoginOutcome.timeout);
+
+      GptomAidlPluginIOS.debugHandleRedirect(antwortAuf(gerufen!, {
+        'status': 'COMPLETED',
+        'appStatus': '{"appVersion":"1"}',
+      }));
+
+      expect(GptomAidlPluginIOS.pendingRedirects, isEmpty);
+      expect(GptomAidlPlugin().pendingRedirect(), isNull);
+    });
+
+    test('Login: später Redirect landet nicht im Zahlungspuffer', () async {
+      gpTom();
+      final r = await GptomIosAccount.login(
+        const GptomCredentials(
+          username: 'livia@melisse-nails.example',
+          password: 'Geheim 1+2&3%#ä',
+          terminalId: '12345678',
+        ),
+        timeout: const Duration(milliseconds: 20),
+      );
+      expect(r.outcome, GptomLoginOutcome.timeout);
+
+      GptomAidlPluginIOS.debugHandleRedirect(
+          antwortAuf(gerufen!, {'status': 'COMPLETED'}));
+
+      expect(GptomAidlPluginIOS.pendingRedirects, isEmpty);
+      expect(GptomAidlPlugin().pendingRedirect(), isNull);
+    });
+
+    test('Kassenschnitt: später Redirect landet nicht im Zahlungspuffer',
+        () async {
+      gpTom();
+      await expectLater(
+        GptomAidlPluginIOS.closeBatchIOS(
+          redirectTimeout: const Duration(milliseconds: 20),
+        ),
+        throwsException,
+      );
+
+      GptomAidlPluginIOS.debugHandleRedirect(
+          antwortAuf(gerufen!, {'status': 'COMPLETED'}));
+
+      expect(GptomAidlPluginIOS.pendingRedirects, isEmpty);
+      expect(GptomAidlPlugin().pendingRedirect(), isNull);
+    });
+
+    test('der Rohstrom führt den späten Redirect trotzdem', () async {
+      gpTom();
+      final roh = <Uri>[];
+      final abo = GptomAidlPluginIOS.gptomRedirectStream.stream.listen(roh.add);
+      addTearDown(abo.cancel);
+      await GptomIosAccount.status(timeout: const Duration(milliseconds: 20));
+
+      final spaet = antwortAuf(gerufen!, {'status': 'COMPLETED'});
+      GptomAidlPluginIOS.debugHandleRedirect(spaet);
+      await pumpEventQueue();
+
+      expect(roh, [spaet]);
+      expect(GptomAidlPluginIOS.pendingRedirects, isEmpty);
+    });
+  });
+
+  group('Doppelte Redirects', () {
+    test('Kopie eines schon beantworteten Verkaufs ist unbestätigt', () async {
+      Uri? antwort;
+      gpTom(antwort: (a) =>
+          antwort = antwortAuf(a, {'status': 'COMPLETED', 'amsID': 'ams-1'}));
+      final result = await verkauf();
+      expect(result.result, GptomResultCode.success);
+
+      // GP tom schickt denselben Redirect ein zweites Mal.
+      GptomAidlPluginIOS.debugHandleRedirect(antwort!);
+
+      final offen = GptomAidlPlugin().pendingRedirect()!;
+      expect(offen.isVerified, isFalse);
+      expect(offen.requestId, isNull);
+      expect(offen.asSellResult().result, GptomResultCode.unverified);
+    });
+
+    test('Kopie nach Abholung über requestId ist unbestätigt', () async {
+      final id = GptomAidlPlugin.neueVorgangsId();
+      gpTom();
+      await verkauf(requestId: id, timeout: const Duration(milliseconds: 20));
+      final spaet =
+          antwortAuf(gerufen!, {'status': 'COMPLETED', 'amsID': 'ams-2'});
+      GptomAidlPluginIOS.debugHandleRedirect(spaet);
+
+      final erster = GptomAidlPlugin().pendingRedirect(requestId: id)!;
+      expect(erster.isVerified, isTrue);
+      expect(erster.asSellResult().result, GptomResultCode.success);
+
+      GptomAidlPluginIOS.debugHandleRedirect(spaet);
+      final kopie = GptomAidlPlugin().pendingRedirect(requestId: id)!;
+      expect(kopie.isVerified, isFalse);
+      expect(kopie.asSellResult().result, GptomResultCode.unverified);
+    });
+
+    test('Kopie nach Abholung ohne Angabe ist unbestätigt', () async {
+      gpTom();
+      await verkauf(timeout: const Duration(milliseconds: 20));
+      final spaet =
+          antwortAuf(gerufen!, {'status': 'COMPLETED', 'amsID': 'ams-3'});
+      GptomAidlPluginIOS.debugHandleRedirect(spaet);
+      expect(GptomAidlPlugin().pendingRedirect()!.isVerified, isTrue);
+
+      GptomAidlPluginIOS.debugHandleRedirect(spaet);
+      final kopie = GptomAidlPlugin().pendingRedirect()!;
+      expect(kopie.isVerified, isFalse);
+      expect(kopie.asSellResult().result, GptomResultCode.unverified);
+    });
+
+    test('zwei Kopien im Puffer: nur die erste ist bestätigt', () async {
+      gpTom();
+      await verkauf(timeout: const Duration(milliseconds: 20));
+      final spaet =
+          antwortAuf(gerufen!, {'status': 'COMPLETED', 'amsID': 'ams-4'});
+      GptomAidlPluginIOS.debugHandleRedirect(spaet);
+      GptomAidlPluginIOS.debugHandleRedirect(spaet);
+
+      final puffer = GptomAidlPluginIOS.pendingRedirects;
+      expect(puffer.map((p) => p.isVerified), [true, false]);
+    });
+  });
+
+  group('Abholung bevorzugt bestätigte Redirects', () {
+    test('ohne Angabe: erst der bestätigte, dann der unbestätigte', () async {
+      // Zuerst eine Fälschung, dann die echte (verspätete) Antwort.
+      GptomAidlPluginIOS.debugHandleRedirect(
+          Uri.parse('meineapp://redirect?status=COMPLETED&amsID=falsch'));
+      gpTom();
+      await verkauf(timeout: const Duration(milliseconds: 20));
+      GptomAidlPluginIOS.debugHandleRedirect(
+          antwortAuf(gerufen!, {'status': 'COMPLETED', 'amsID': 'ams-echt'}));
+
+      final plugin = GptomAidlPlugin();
+      final erster = plugin.pendingRedirect()!;
+      expect(erster.isVerified, isTrue);
+      expect(erster.asSellResult().transactionId, 'ams-echt');
+      final zweiter = plugin.pendingRedirect()!;
+      expect(zweiter.isVerified, isFalse);
+      expect(plugin.pendingRedirect(), isNull);
+    });
+
+    test('mit Referenz: der bestätigte vor einer Fälschung mit gleicher Referenz',
+        () async {
+      GptomAidlPluginIOS.debugHandleRedirect(Uri.parse(
+          'meineapp://redirect?status=COMPLETED&referenceNumber=RE-2026-001'));
+      gpTom();
+      await verkauf(
+          referenz: 'RE-2026-001', timeout: const Duration(milliseconds: 20));
+      GptomAidlPluginIOS.debugHandleRedirect(antwortAuf(gerufen!, {
+        'status': 'COMPLETED',
+        'referenceNumber': 'RE-2026-001',
+        'amsID': 'ams-echt',
+      }));
+
+      final offen =
+          GptomAidlPlugin().pendingRedirect(originReferenceNum: 'RE-2026-001')!;
+      expect(offen.isVerified, isTrue);
+      expect(offen.asSellResult().transactionId, 'ams-echt');
+    });
+
+    test('Puffer voll mit Fälschungen: der bestätigte bleibt', () async {
+      gpTom();
+      final result = await verkauf(timeout: const Duration(milliseconds: 20));
+      GptomAidlPluginIOS.debugHandleRedirect(
+          antwortAuf(gerufen!, {'status': 'COMPLETED', 'amsID': 'ams-echt'}));
+
+      for (var i = 0; i < GptomAidlPluginIOS.maxPendingRedirects + 2; i++) {
+        GptomAidlPluginIOS.debugHandleRedirect(Uri.parse(
+            'meineapp://redirect/${GptomAidlPlugin.neueVorgangsId()}?status=COMPLETED'));
+      }
+
+      final puffer = GptomAidlPluginIOS.pendingRedirects;
+      expect(puffer, hasLength(GptomAidlPluginIOS.maxPendingRedirects));
+      expect(puffer.where((p) => p.isVerified), hasLength(1));
+      final offen = GptomAidlPlugin().pendingRedirect()!;
+      expect(offen.isVerified, isTrue);
+      expect(offen.requestId, result.requestId);
+      expect(offen.asSellResult().result, GptomResultCode.success);
+    });
+
+    test('Puffer voll: unbestätigte fallen vor bestätigten heraus', () async {
+      final ids = <String>[];
+      gpTom();
+      for (var i = 0; i < 2; i++) {
+        final r = await verkauf(timeout: const Duration(milliseconds: 10));
+        ids.add(r.requestId!);
+        GptomAidlPluginIOS.debugHandleRedirect(
+            antwortAuf(gerufen!, {'status': 'COMPLETED', 'amsID': 'ams-$i'}));
+      }
+      for (var i = 0; i < GptomAidlPluginIOS.maxPendingRedirects; i++) {
+        GptomAidlPluginIOS.debugHandleRedirect(
+            Uri.parse('meineapp://redirect?status=COMPLETED&amsID=f$i'));
+      }
+
+      final puffer = GptomAidlPluginIOS.pendingRedirects;
+      expect(puffer, hasLength(GptomAidlPluginIOS.maxPendingRedirects));
+      expect(puffer.where((p) => p.isVerified).map((p) => p.requestId), ids);
+      // Von den Fälschungen bleiben nur die jüngsten.
+      expect(puffer.last.uri.queryParameters['amsID'],
+          'f${GptomAidlPluginIOS.maxPendingRedirects - 1}');
     });
   });
 

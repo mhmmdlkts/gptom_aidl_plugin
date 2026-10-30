@@ -79,7 +79,9 @@ class GptomAidlPlugin {
   }
 
   /// Holt einen Redirect ab, für den es keinen wartenden Aufruf gab
-  /// (Kaltstart oder verspäteter Redirect) und entfernt ihn aus dem Puffer.
+  /// (Kaltstart oder verspäteter Redirect einer Zahlung) und entfernt ihn aus
+  /// dem Puffer. Späte Redirects von Status, Login, Logout, Passwortwechsel,
+  /// Kassenschnitt und Belegabfrage kommen gar nicht erst in den Puffer.
   ///
   /// Mit [requestId] den Redirect mit genau diesem Token – er gilt dann als
   /// bestätigt, auch nach einem Kaltstart. [requestId] muss aus dem eigenen
@@ -87,12 +89,17 @@ class GptomAidlPlugin {
   /// Aufruf gesichert, eine je Zahlungsversuch, nie wiederverwendet), **nie**
   /// aus einem Redirect oder einem Ergebnis: Sonst bestätigt die Kasse eine
   /// Fälschung mit deren eigenem Token. Das Plugin gibt bei unbestätigten
-  /// Redirects deshalb keine Kennung heraus.
+  /// Redirects deshalb keine Kennung heraus. Ist der Redirect zu [requestId]
+  /// in diesem Prozess schon beantwortet oder abgeholt, ist ein weiterer eine
+  /// Kopie und bleibt unbestätigt.
   ///
-  /// Sonst mit [originReferenceNum] gezielt zur gemerkten Zahlung; ein
-  /// solcher Redirect ist nur bestätigt ([GptomPendingRedirect.isVerified]),
-  /// wenn sein Token in diesem Prozess vergeben wurde. Unbestätigte Redirects
-  /// ergeben nie Erfolg, sondern [GptomResultCode.unverified].
+  /// Sonst mit [originReferenceNum] gezielt zur gemerkten Zahlung, ohne
+  /// Angabe irgendeinen – jeweils zuerst den ältesten bestätigten
+  /// ([GptomPendingRedirect.isVerified]), erst wenn es keinen gibt den
+  /// ältesten unbestätigten. Bestätigt ist ein solcher Redirect nur, wenn er
+  /// das Token einer in diesem Prozess gestarteten, noch offenen Zahlung
+  /// trägt. Unbestätigte Redirects ergeben nie Erfolg, sondern
+  /// [GptomResultCode.unverified].
   GptomPendingRedirect? pendingRedirect({String? originReferenceNum, String? requestId}) {
     return GptomAidlPluginIOS.pendingRedirect(
       originReferenceNum: originReferenceNum,

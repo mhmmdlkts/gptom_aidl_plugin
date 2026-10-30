@@ -18,6 +18,7 @@ import 'models/request_result.dart';
 /// Ein Redirect aus GP tom, für den es keinen wartenden Aufruf gab –
 /// typischerweise nach einem Kaltstart (iOS hat die Kasse beendet, während
 /// GP tom vorn war) oder ein verspäteter Redirect einer früheren Zahlung.
+/// Späte Redirects von Status, Login & Co. landen nicht hier (Token-Modus).
 ///
 /// Die App holt ihn mit [GptomAidlPluginIOS.pendingRedirect] ab: am
 /// sichersten über die `requestId` aus ihrem eigenen Speicher (vor dem
@@ -35,9 +36,12 @@ class GptomPendingRedirect {
   /// Zeitpunkt des Eingangs (Gerätezeit).
   final DateTime receivedAt;
 
-  /// Stammt der Redirect nachweislich aus GP tom? Im Token-Modus nur, wenn er
-  /// ein Token trägt, das dieser Prozess vergeben hat, oder wenn die App ihn
-  /// über `pendingRedirect(requestId: …)` abgeholt hat. Im Altmodus
+  /// Stammt der Redirect nachweislich aus GP tom und gehört er zu einer
+  /// Zahlung? Im Token-Modus nur, wenn er das Token einer Zahlung (Verkauf,
+  /// Storno, Rückerstattung) trägt, die dieser Prozess gestartet hat und die
+  /// noch nicht beantwortet bzw. abgeholt wurde, oder wenn die App ihn über
+  /// `pendingRedirect(requestId: …)` zum ersten Mal abgeholt hat. Eine Kopie
+  /// eines schon beantworteten Redirects ist unbestätigt. Im Altmodus
   /// (`GptomSecurityConfig.redirectTokenIOS = false`) immer `true`.
   final bool isVerified;
 
@@ -118,6 +122,11 @@ class GptomPendingRedirect {
       'status=$status, isVerified=$isVerified, receivedAt=$receivedAt)';
 }
 
+/// Art des Aufrufs, für den ein Token ausgegeben wurde. Nur ein später
+/// Redirect zu einer Zahlung (Verkauf, Storno, Rückerstattung) kann als
+/// bestätigter Eintrag in den Puffer kommen.
+enum _TokenArt { zahlung, sonstige }
+
 /// Wartet auf den Redirect eines bestimmten Aufrufs.
 class _RedirectWaiter {
   /// Token-Modus: das Token aus der eigenen `redirectUrl`. `null` heißt
@@ -165,13 +174,20 @@ class GptomAidlPluginIOS {
   /// So viele unzugeordnete Redirects bleiben gemerkt; ältere fallen heraus.
   static const int maxPendingRedirects = 10;
 
-  /// Tokens, die dieser Prozess an GP tom geschickt hat (Einfügereihenfolge,
-  /// älteste zuerst). Nur damit wird ein gepufferter Redirect ohne
-  /// Wartenden als bestätigt erkannt. Nach einem Kaltstart ist die Menge leer
-  /// – dann bestätigt die App über `pendingRedirect(requestId: …)`.
-  static final Set<String> _ausgegebeneTokens = <String>{};
+  /// Tokens, die dieser Prozess an GP tom geschickt hat und deren Redirect
+  /// noch aussteht, mit der Art des Aufrufs (Einfügereihenfolge, älteste
+  /// zuerst). Nur ein Zahlungs-Token macht einen gepufferten Redirect ohne
+  /// Wartenden zu einem bestätigten. Nach einem Kaltstart ist die Tabelle
+  /// leer – dann bestätigt die App über `pendingRedirect(requestId: …)`.
+  static final Map<String, _TokenArt> _ausgegebeneTokens = <String, _TokenArt>{};
 
-  /// So viele ausgegebene Tokens bleiben gemerkt; ältere fallen heraus.
+  /// Tokens, deren Redirect schon beantwortet oder abgeholt wurde. Eine
+  /// spätere Kopie desselben Redirects (GP tom schickt ihn erneut) bleibt
+  /// damit unbestätigt – auch über `pendingRedirect(requestId: …)`.
+  static final Set<String> _verbrauchteTokens = <String>{};
+
+  /// So viele ausgegebene bzw. verbrauchte Tokens bleiben gemerkt; ältere
+  /// fallen heraus.
   static const int _maxAusgegebeneTokens = 50;
 
   /// Format von Token und Vorgangskennung: 32 Hex-Zeichen, klein. Hex
@@ -213,11 +229,23 @@ class GptomAidlPluginIOS {
     return _tokenMuster.hasMatch(token) ? token : null;
   }
 
-  static void _merkeToken(String token) {
+  static void _merkeToken(String token, _TokenArt art) {
     _ausgegebeneTokens.remove(token);
-    _ausgegebeneTokens.add(token);
+    _ausgegebeneTokens[token] = art;
     while (_ausgegebeneTokens.length > _maxAusgegebeneTokens) {
-      _ausgegebeneTokens.remove(_ausgegebeneTokens.first);
+      _ausgegebeneTokens.remove(_ausgegebeneTokens.keys.first);
+    }
+  }
+
+  /// Der Redirect zu [token] ist beantwortet bzw. abgeholt: Das Token
+  /// bestätigt danach nichts mehr.
+  static void _verbrauchen(String? token) {
+    if (token == null) return;
+    _ausgegebeneTokens.remove(token);
+    _verbrauchteTokens.remove(token);
+    _verbrauchteTokens.add(token);
+    while (_verbrauchteTokens.length > _maxAusgegebeneTokens) {
+      _verbrauchteTokens.remove(_verbrauchteTokens.first);
     }
   }
 
@@ -273,21 +301,37 @@ class GptomAidlPluginIOS {
         _waiters.remove(waiter);
         if (!waiter.completer.isCompleted) {
           waiter.completer.complete(uri);
+          _verbrauchen(waiter.token);
           return;
         }
       }
     }
 
-    // Kein Wartender. Im Token-Modus gilt der Redirect nur als bestätigt,
-    // wenn er ein Token trägt, das dieser Prozess vergeben hat – ein
-    // gefälschter Link ohne oder mit erfundenem Token ergibt so nie "bezahlt".
     final token = tokenFromRedirect(uri);
+    final art = token == null ? null : _ausgegebeneTokens[token];
+    if (art == _TokenArt.sonstige) {
+      // Später Redirect von Status, Login, Logout, Passwortwechsel,
+      // Kassenschnitt oder Belegabfrage: Er gehört zu keiner Zahlung und darf
+      // nie als solche lesbar werden. Nur der Rohstrom führt ihn.
+      return;
+    }
+
+    // Kein Wartender. Im Token-Modus gilt der Redirect nur als bestätigt,
+    // wenn er das Token einer Zahlung trägt, die dieser Prozess gestartet hat
+    // – ein gefälschter Link ohne oder mit erfundenem Token ergibt so nie
+    // "bezahlt". Je Token höchstens ein bestätigter Eintrag: eine Kopie
+    // desselben Redirects bliebe sonst doppelt verbuchbar.
     final bestaetigt = !GptomSecurityConfig.current.redirectTokenIOS ||
-        (token != null && _ausgegebeneTokens.contains(token));
+        (art == _TokenArt.zahlung &&
+            !_pendingRedirects.any(
+                (p) => p.isVerified && tokenFromRedirect(p.uri) == token));
     _pendingRedirects
         .add(GptomPendingRedirect(uri, DateTime.now(), isVerified: bestaetigt));
     while (_pendingRedirects.length > maxPendingRedirects) {
-      _pendingRedirects.removeAt(0);
+      // Erst die unbestätigten: eine Flut gefälschter Links darf eine echte,
+      // noch nicht abgeholte Zahlung nicht aus dem Puffer drängen.
+      final unbestaetigt = _pendingRedirects.indexWhere((p) => !p.isVerified);
+      _pendingRedirects.removeAt(unbestaetigt >= 0 ? unbestaetigt : 0);
     }
   }
 
@@ -312,6 +356,7 @@ class GptomAidlPluginIOS {
     _waiters.clear();
     _pendingRedirects.clear();
     _ausgegebeneTokens.clear();
+    _verbrauchteTokens.clear();
   }
 
   static Future<bool> _launch(Uri uri) {
@@ -330,7 +375,10 @@ class GptomAidlPluginIOS {
   /// [originReferenceNum] wie bisher.
   ///
   /// `redirect == null && !cannotOpen` heißt Timeout. Ein später
-  /// eintreffender Redirect landet dann im Puffer ([pendingRedirect]).
+  /// eintreffender Redirect landet dann nur bei [zahlung] (Verkauf, Storno,
+  /// Rückerstattung) bestätigt im Puffer ([pendingRedirect]). Bei allen
+  /// anderen Aufrufen (Status, Login, Kassenschnitt, Belegabfrage, …) geht
+  /// er nur in den Rohstrom: Er darf nie als Zahlung lesbar werden.
   ///
   /// Die geöffnete URL kann Zugangsdaten enthalten und erscheint deshalb in
   /// keiner Fehlermeldung und keinem Log. Ob der iOS-Weg aktiv ist
@@ -340,6 +388,7 @@ class GptomAidlPluginIOS {
     required Duration timeout,
     String? token,
     String? originReferenceNum,
+    bool zahlung = false,
   }) async {
     if (token != null && !_tokenMuster.hasMatch(token)) {
       throw ArgumentError(
@@ -351,7 +400,9 @@ class GptomAidlPluginIOS {
         ? (token ?? neueVorgangsId())
         : null;
     final uri = bauen(redirectUrlFuer(vorgangsToken));
-    if (vorgangsToken != null) _merkeToken(vorgangsToken);
+    if (vorgangsToken != null) {
+      _merkeToken(vorgangsToken, zahlung ? _TokenArt.zahlung : _TokenArt.sonstige);
+    }
 
     // Vor dem Öffnen anmelden, damit kein Redirect verpasst wird.
     final waiter = _RedirectWaiter(
@@ -396,39 +447,46 @@ class GptomAidlPluginIOS {
   /// der App stammt (vor dem Aufruf gesichert, eine Kennung je
   /// Zahlungsversuch, nie wiederverwendet) – nie aus einem Redirect oder
   /// einem Ergebnis. Unbestätigte Einträge und ihre Ergebnisse geben das
-  /// Token deshalb gar nicht erst heraus. [originReferenceNum] wird dann
-  /// nicht beachtet.
+  /// Token deshalb gar nicht erst heraus. Wurde der Redirect zu [requestId]
+  /// in diesem Prozess schon beantwortet oder abgeholt, ist ein weiterer eine
+  /// Kopie und bleibt unbestätigt. [originReferenceNum] wird dann nicht
+  /// beachtet.
   ///
   /// Sonst mit [originReferenceNum] gezielt den Redirect zu einer gemerkten
-  /// Zahlung, ohne Angabe den ältesten; `isVerified` bleibt dabei, wie es
-  /// beim Eingang festgestellt wurde. Passt nichts, bleibt der Puffer
-  /// unverändert und es kommt `null`.
+  /// Zahlung, ohne Angabe irgendeinen. In beiden Fällen zuerst den ältesten
+  /// bestätigten, erst wenn es keinen gibt den ältesten unbestätigten; so
+  /// verdeckt eine Fälschung nie die echte Antwort. `isVerified` bleibt
+  /// dabei, wie es beim Eingang festgestellt wurde. Passt nichts, bleibt der
+  /// Puffer unverändert und es kommt `null`.
   static GptomPendingRedirect? pendingRedirect({
     String? originReferenceNum,
     String? requestId,
   }) {
     if (_pendingRedirects.isEmpty) return null;
     if (requestId != null) {
-      for (var i = 0; i < _pendingRedirects.length; i++) {
-        final offen = _pendingRedirects[i];
-        // Das rohe Token aus dem Pfad: der Eintrag ist ja (noch) unbestätigt,
-        // sein `requestId`-Getter liefert dann `null`.
-        if (tokenFromRedirect(offen.uri) == requestId) {
-          _pendingRedirects.removeAt(i);
-          return GptomPendingRedirect(offen.uri, offen.receivedAt, isVerified: true);
-        }
-      }
-      return null;
+      // Das rohe Token aus dem Pfad: ein unbestätigter Eintrag gibt es über
+      // seinen `requestId`-Getter nicht heraus.
+      final i = _aeltesterPassender((p) => tokenFromRedirect(p.uri) == requestId);
+      if (i < 0) return null;
+      final offen = _pendingRedirects.removeAt(i);
+      final bestaetigt = !_verbrauchteTokens.contains(requestId);
+      if (bestaetigt) _verbrauchen(requestId);
+      return GptomPendingRedirect(offen.uri, offen.receivedAt, isVerified: bestaetigt);
     }
-    if (originReferenceNum == null) {
-      return _pendingRedirects.removeAt(0);
-    }
-    for (var i = 0; i < _pendingRedirects.length; i++) {
-      if (_pendingRedirects[i].originReferenceNum == originReferenceNum) {
-        return _pendingRedirects.removeAt(i);
-      }
-    }
-    return null;
+    final i = _aeltesterPassender((p) =>
+        originReferenceNum == null || p.originReferenceNum == originReferenceNum);
+    if (i < 0) return null;
+    final offen = _pendingRedirects.removeAt(i);
+    if (offen.isVerified) _verbrauchen(tokenFromRedirect(offen.uri));
+    return offen;
+  }
+
+  /// Index des ältesten bestätigten Eintrags, auf den [passt] zutrifft; gibt
+  /// es keinen, des ältesten unbestätigten. `-1`, wenn nichts passt.
+  static int _aeltesterPassender(bool Function(GptomPendingRedirect) passt) {
+    final bestaetigt =
+        _pendingRedirects.indexWhere((p) => p.isVerified && passt(p));
+    return bestaetigt >= 0 ? bestaetigt : _pendingRedirects.indexWhere(passt);
   }
 
   /// Leert den Puffer (z. B. nachdem die App alle offenen Zahlungen geklärt hat).
@@ -1177,6 +1235,7 @@ class GptomAidlPluginIOS {
       timeout: timeout,
       token: vorgangsId,
       originReferenceNum: originReferenceNum,
+      zahlung: true,
     );
     final redirect = antwort.redirect;
     if (redirect != null) return redirect;
