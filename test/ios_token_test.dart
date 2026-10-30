@@ -738,6 +738,60 @@ void main() {
       expect(result.requestId, gesucht);
     });
 
+    test('Belegabfrage: COMPLETED ohne Beleg ist kein Erfolg (-1004)', () async {
+      gpTom(antwort: (a) => antwortAuf(a, {'status': 'COMPLETED', 'amsID': 'ams-2'}));
+      final gesucht = GptomAidlPlugin.neueVorgangsId();
+
+      final result = await GptomAidlPlugin().transactionDetailIOS(
+        requestId: gesucht,
+        timeout: const Duration(milliseconds: 200),
+      );
+
+      expect(result.result, GptomResultCode.noReceipt);
+      expect(result.error?.errorCode, GptomErrorCode.noReceipt);
+      expect(result.responseMessage, 'COMPLETED');
+      expect(result.transactionType, isNull);
+      expect(result.requestId, gesucht);
+    });
+
+    test('Belegabfrage: ERROR mit error-Wert wird -1004 mit diesem Wert', () async {
+      gpTom(antwort: (a) =>
+          antwortAuf(a, {'status': 'ERROR', 'error': 'transactionNotFound'}));
+
+      final result = await GptomAidlPlugin().transactionDetailIOS(
+        amsId: 'ams-unbekannt',
+        timeout: const Duration(milliseconds: 200),
+      );
+
+      expect(result.result, GptomResultCode.noReceipt);
+      expect(result.error?.errorCode, 'transactionNotFound');
+      expect(result.error?.result, GptomResultCode.noReceipt);
+      expect(result.responseMessage, 'ERROR');
+    });
+
+    test('Belegabfrage mit Beleg: gelesen, aber ohne transactionType', () async {
+      gpTom(antwort: (a) => antwortAuf(a, {
+            'status': 'COMPLETED',
+            'receipt': jsonEncode({
+              'result': 0,
+              'amount': '4,35',
+              'amsID': 'ams-2',
+              // Im Beleg ist transactionType die Zahlungsart, nicht Verkauf/Storno.
+              'transactionType': 'CARD',
+            }),
+          }));
+
+      final result = await GptomAidlPlugin().transactionDetailIOS(
+        amsId: 'ams-2',
+        timeout: const Duration(milliseconds: 200),
+      );
+
+      expect(result.result, GptomResultCode.success);
+      expect(result.amountCents, 435);
+      expect(result.transactionId, 'ams-2');
+      expect(result.transactionType, isNull);
+    });
+
     test('Belegabfrage ohne amsId und requestId wirft ArgumentError', () {
       gpTom();
       expect(() => GptomAidlPlugin().transactionDetailIOS(), throwsArgumentError);

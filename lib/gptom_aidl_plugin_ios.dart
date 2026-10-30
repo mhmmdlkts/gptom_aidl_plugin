@@ -753,10 +753,12 @@ class GptomAidlPluginIOS {
   /// Alles hier ist Fremd-Input: Kein Schritt darf werfen, und die
   /// Ausgänge müssen unterscheidbar bleiben (siehe [GptomResultCode]).
   /// [requestId] steht in jedem Ergebnis, auch in den Fehlern.
+  /// [art] `null` (Belegabfrage): die Art des Vorgangs ist nicht bekannt,
+  /// `transactionType` bleibt leer, die Kennung ist die amsID.
   static RequestResult _requestResultFromReceipt(
     Uri redirectedUri, {
     required bool printByPaymentApp,
-    required TransactionType art,
+    required TransactionType? art,
     String? originReferenceNum,
     String? requestId,
   }) {
@@ -960,6 +962,42 @@ class GptomAidlPluginIOS {
     );
   }
 
+  /// Parst das Ergebnis aus dem Redirect von gptom://transaction/detail.
+  ///
+  /// Anders als beim Verkauf zählt hier nur ein Beleg: Ohne `receipt` ist
+  /// das Ergebnis [GptomResultCode.noReceipt], auch bei `status=COMPLETED`
+  /// (die Abfrage ist gelungen, über die Zahlung sagt das nichts). Der
+  /// `error`-Wert von GP tom (z. B. „nicht gefunden“) steht dann in
+  /// `error.errorCode`, der Status in `responseMessage`.
+  ///
+  /// Mit Beleg wird er wie beim Verkauf gelesen, aber ohne `transactionType`:
+  /// Das gleichnamige Feld im Beleg ist die Zahlungsart, nicht Verkauf oder
+  /// Storno.
+  @visibleForTesting
+  static RequestResult requestResultFromDetailRedirect(
+    Uri redirectedUri, {
+    String? requestId,
+  }) {
+    final query = redirectedUri.queryParameters;
+    if (query['receipt'] == null) {
+      final gpTomFehler = query['error'];
+      return _pluginFehler(
+        GptomResultCode.noReceipt,
+        gpTomFehler != null && gpTomFehler.isNotEmpty
+            ? gpTomFehler
+            : GptomErrorCode.noReceipt,
+        query['status'] ?? 'Kein Receipt enthalten',
+        requestId: requestId,
+      );
+    }
+    return _requestResultFromReceipt(
+      redirectedUri,
+      printByPaymentApp: false,
+      art: null,
+      requestId: requestId,
+    );
+  }
+
   /// Baut die URL für gptom://transaction/refund.
   @visibleForTesting
   static Uri buildRefundUri({
@@ -1069,8 +1107,10 @@ class GptomAidlPluginIOS {
   /// Vorgangskennung). Die Abfrage selbst läuft unter einem eigenen,
   /// frischen Token. Fehlen beide, wirft die Methode [ArgumentError].
   ///
-  /// Das Ergebnis liest den Beleg wie beim Verkauf. Sein `requestId` ist die
-  /// nachgeschlagene Kennung (der eigene Wert der App), sonst `null`.
+  /// Das Ergebnis liest den Beleg wie beim Verkauf, aber ohne
+  /// `transactionType`. Ohne Beleg ist es [GptomResultCode.noReceipt], nie
+  /// Erfolg (siehe [requestResultFromDetailRedirect]). Sein `requestId` ist
+  /// die nachgeschlagene Kennung (der eigene Wert der App), sonst `null`.
   static Future<RequestResult> transactionDetailIOS({
     String? amsId,
     String? requestId,
@@ -1112,11 +1152,7 @@ class GptomAidlPluginIOS {
         requestId: requestId,
       );
     }
-    return requestResultFromCreateRedirect(
-      redirect,
-      printByPaymentApp: false,
-      requestId: requestId,
-    );
+    return requestResultFromDetailRedirect(redirect, requestId: requestId);
   }
 
   /// Verkauf über `gptom://transaction/create`.
