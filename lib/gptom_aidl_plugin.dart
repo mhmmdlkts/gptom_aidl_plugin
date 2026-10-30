@@ -68,9 +68,19 @@ class GptomAidlPlugin {
 
   /// Holt einen Redirect ab, für den es keinen wartenden Aufruf gab
   /// (Kaltstart oder verspäteter Redirect) und entfernt ihn aus dem Puffer.
-  /// Mit [originReferenceNum] gezielt zur gemerkten Zahlung.
-  GptomPendingRedirect? pendingRedirect({String? originReferenceNum}) {
-    return GptomAidlPluginIOS.pendingRedirect(originReferenceNum: originReferenceNum);
+  ///
+  /// Mit [requestId] (der vor dem Aufruf gespeicherten Vorgangskennung, siehe
+  /// [neueVorgangsId]) den Redirect mit genau diesem Token – er gilt dann als
+  /// bestätigt, auch nach einem Kaltstart. Sonst mit [originReferenceNum]
+  /// gezielt zur gemerkten Zahlung; ein solcher Redirect ist nur bestätigt
+  /// ([GptomPendingRedirect.isVerified]), wenn sein Token in diesem Prozess
+  /// vergeben wurde. Unbestätigte Redirects ergeben nie Erfolg, sondern
+  /// [GptomResultCode.unverified].
+  GptomPendingRedirect? pendingRedirect({String? originReferenceNum, String? requestId}) {
+    return GptomAidlPluginIOS.pendingRedirect(
+      originReferenceNum: originReferenceNum,
+      requestId: requestId,
+    );
   }
 
   /// Alle unzugeordneten Redirects, älteste zuerst (ohne sie zu entfernen).
@@ -83,6 +93,12 @@ class GptomAidlPlugin {
   /// nachträglich auflösen.
   Stream<RequestResult> get lateTransactionResultStream =>
       GptomAidlPluginPlatform.instance.lateTransactionResultStream;
+
+  /// Erzeugt eine Vorgangskennung für [sell] und [voidSell] (iOS): 32
+  /// Hex-Zeichen aus `Random.secure`. Die Kasse speichert sie **vor** dem
+  /// Aufruf; nach einem Kaltstart bestätigt sie damit den Redirect
+  /// ([pendingRedirect] mit `requestId`).
+  static String neueVorgangsId() => GptomAidlPluginIOS.neueVorgangsId();
 
   /// Erzeugt eine Referenz für die Zuordnung eines iOS-Redirects.
   /// GP tom nimmt höchstens 20 Zeichen entgegen.
@@ -215,6 +231,13 @@ class GptomAidlPlugin {
   /// Rechnungsnummer, höchstens 20 Zeichen). Auf iOS ordnet das Plugin den
   /// Redirect darüber der richtigen Zahlung zu; ohne Angabe wird eine
   /// erzeugt ([neueReferenz]).
+  ///
+  /// [requestId] (nur iOS, auf Android ignoriert) ist die Vorgangskennung
+  /// aus [neueVorgangsId]. Sie sichert den Redirect gegen Fälschung ab und
+  /// steht immer in `RequestResult.requestId`, auch bei Timeout. Ohne Angabe
+  /// erzeugt das Plugin eine; nach einem Kaltstart ist sie dann verloren.
+  /// Ein Wert, der nicht aus 32 Hex-Zeichen (klein) besteht, wirft
+  /// [ArgumentError].
   Future<RequestResult> sell({
     String? transactionIdAndroid,
     required int amountCents,
@@ -231,6 +254,7 @@ class GptomAidlPlugin {
     Duration? timeout,
     @Deprecated('Ersetzt durch timeout (gilt für beide Plattformen)')
     Duration? redirectTimeoutIOS,
+    String? requestId,
   }) async {
     _requirePositiveCents('amountCents', amountCents);
     _requireNonNegativeCents('tipAmountCents', tipAmountCents);
@@ -248,6 +272,7 @@ class GptomAidlPlugin {
         clientEmail: clientInfo?['email'],
         clientPhone: clientInfo?['phone'],
         redirectTimeout: frist,
+        requestId: requestId,
       );
     }
     if (transactionIdAndroid == null) {
@@ -273,6 +298,7 @@ class GptomAidlPlugin {
   }
 
 
+  /// Storno. [requestId] (nur iOS) wie bei [sell].
   Future<RequestResult> voidSell({
     String? transactionIdAndroid,
     required String originTransactionId,
@@ -286,6 +312,7 @@ class GptomAidlPlugin {
     Duration? timeout,
     @Deprecated('Ersetzt durch timeout (gilt für beide Plattformen)')
     Duration? redirectTimeoutIOS,
+    String? requestId,
   }) async {
     final frist = timeout ?? redirectTimeoutIOS;
     if (GptomAidlPluginIOS.isActive) {
@@ -297,6 +324,7 @@ class GptomAidlPlugin {
         clientEmail: clientInfo?['email'],
         clientID: clientId,
         redirectTimeout: frist,
+        requestId: requestId,
       );
     }
     if (transactionIdAndroid == null) {

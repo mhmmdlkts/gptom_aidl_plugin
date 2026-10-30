@@ -1,10 +1,12 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
+import 'dart:math';
 import 'package:app_links/app_links.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 import 'package:gptom_aidl_plugin/gptom_result_code.dart';
+import 'package:gptom_aidl_plugin/gptom_security.dart';
 import 'package:gptom_aidl_plugin/models/batch.dart';
 import 'package:gptom_aidl_plugin/src/cents_parser.dart';
 import 'package:url_launcher/url_launcher.dart';
@@ -17,8 +19,13 @@ import 'models/request_result.dart';
 /// typischerweise nach einem Kaltstart (iOS hat die Kasse beendet, während
 /// GP tom vorn war) oder ein verspäteter Redirect einer früheren Zahlung.
 ///
-/// Die App holt ihn mit [GptomAidlPluginIOS.pendingRedirect] ab und ordnet
-/// ihn über [originReferenceNum] ihrer gemerkten Zahlung zu.
+/// Die App holt ihn mit [GptomAidlPluginIOS.pendingRedirect] ab: am
+/// sichersten über die gespeicherte `requestId` (bestätigt den Redirect auch
+/// nach einem Kaltstart), sonst über [originReferenceNum].
+///
+/// Ein unbestätigter Redirect ([isVerified] == false) kann gefälscht sein –
+/// jeder kann `<scheme>://redirect?status=COMPLETED` öffnen. Er ergibt
+/// deshalb nie Erfolg, sondern [GptomResultCode.unverified].
 class GptomPendingRedirect {
   /// Der rohe Redirect, wie GP tom ihn geschickt hat.
   final Uri uri;
@@ -26,51 +33,93 @@ class GptomPendingRedirect {
   /// Zeitpunkt des Eingangs (Gerätezeit).
   final DateTime receivedAt;
 
-  GptomPendingRedirect(this.uri, this.receivedAt);
+  /// Stammt der Redirect nachweislich aus GP tom? Im Token-Modus nur, wenn er
+  /// ein Token trägt, das dieser Prozess vergeben hat, oder wenn die App ihn
+  /// über `pendingRedirect(requestId: …)` abgeholt hat. Im Altmodus
+  /// (`GptomSecurityConfig.redirectTokenIOS = false`) immer `true`.
+  final bool isVerified;
+
+  GptomPendingRedirect(this.uri, this.receivedAt, {this.isVerified = true});
 
   /// Referenz aus dem Redirect (`referenceNumber` bzw. `originReferenceNum`),
   /// also genau der Wert, den die App bei `sell` mitgegeben hat.
   String? get originReferenceNum => GptomAidlPluginIOS.referenceFromRedirect(uri);
 
+  /// Token aus dem Redirect-Pfad. Bei Verkauf und Storno ist das die
+  /// Vorgangskennung (`requestId`) des Aufrufs.
+  String? get requestId => GptomAidlPluginIOS.tokenFromRedirect(uri);
+
   /// `TASK_STATUS` aus dem Redirect (COMPLETED, CANCELED, ERROR).
   String? get status => uri.queryParameters['status'];
 
-  /// Liest den Redirect als Ergebnis eines Verkaufs.
+  /// Liest den Redirect als Ergebnis eines Verkaufs. Unbestätigt:
+  /// [GptomResultCode.unverified], nie Erfolg.
   RequestResult asSellResult({bool printByPaymentApp = false}) {
+    if (!isVerified) return _unbestaetigt();
     return GptomAidlPluginIOS.requestResultFromCreateRedirect(
       uri,
       printByPaymentApp: printByPaymentApp,
       originReferenceNum: originReferenceNum,
+      requestId: requestId,
     );
   }
 
-  /// Liest den Redirect als Ergebnis eines Stornos.
+  /// Liest den Redirect als Ergebnis eines Stornos. Unbestätigt:
+  /// [GptomResultCode.unverified], nie Erfolg.
   RequestResult asVoidResult({bool printByPaymentApp = false}) {
+    if (!isVerified) return _unbestaetigt();
     return GptomAidlPluginIOS.requestResultFromCancelRedirect(
       uri,
       printByPaymentApp: printByPaymentApp,
       originReferenceNum: originReferenceNum,
+      requestId: requestId,
     );
   }
+
+  /// Der Inhalt des Redirects wird gar nicht erst ausgewertet: Ein
+  /// gefälschter Link mit erratbarer Rechnungsnummer darf nichts als bezahlt
+  /// verbuchen. Die Kasse klärt den Fall über die `requestId`.
+  RequestResult _unbestaetigt() => RequestResult(
+        result: GptomResultCode.unverified,
+        responseMessage: 'Redirect nicht bestätigt',
+        error: ErrorInfo(
+          errorCode: GptomErrorCode.unverified,
+          result: GptomResultCode.unverified,
+        ),
+        requestId: requestId,
+      );
 
   @override
   String toString() =>
       'GptomPendingRedirect(originReferenceNum=$originReferenceNum, '
-      'status=$status, receivedAt=$receivedAt)';
+      'status=$status, isVerified=$isVerified, receivedAt=$receivedAt)';
 }
 
-/// Wartet auf den Redirect einer bestimmten Zahlung.
+/// Wartet auf den Redirect eines bestimmten Aufrufs.
 class _RedirectWaiter {
+  /// Token-Modus: das Token aus der eigenen `redirectUrl`. `null` heißt
+  /// Altmodus (Zuordnung über die Referenz).
+  final String? token;
   final String? expectedReference;
   final Completer<Uri> completer = Completer<Uri>();
 
-  _RedirectWaiter(this.expectedReference);
+  _RedirectWaiter({this.token, this.expectedReference});
 
-  /// Ein Redirect ohne erkennbare Referenz wird angenommen – GP tom liefert
-  /// die Referenz nur zurück, wenn sie mitgegeben wurde, und ältere
-  /// App-Versionen kennen das Feld nicht.
-  bool accepts(String? reference) =>
-      expectedReference == null || reference == null || reference == expectedReference;
+  bool accepts(Uri uri) {
+    final eigenesToken = token;
+    if (eigenesToken != null) {
+      // Token-Modus: nur genau dieses Token. Die Referenz zählt hier nicht –
+      // eine Rechnungsnummer ist erratbar, das Token nicht.
+      return GptomAidlPluginIOS.tokenFromRedirect(uri) == eigenesToken;
+    }
+    // Altmodus: Ein Redirect ohne erkennbare Referenz wird angenommen –
+    // GP tom liefert die Referenz nur zurück, wenn sie mitgegeben wurde, und
+    // ältere App-Versionen kennen das Feld nicht.
+    final reference = GptomAidlPluginIOS.referenceFromRedirect(uri);
+    return expectedReference == null ||
+        reference == null ||
+        reference == expectedReference;
+  }
 }
 
 class GptomAidlPluginIOS {
@@ -89,9 +138,60 @@ class GptomAidlPluginIOS {
   /// So viele unzugeordnete Redirects bleiben gemerkt; ältere fallen heraus.
   static const int maxPendingRedirects = 10;
 
-  /// Die Redirect-URL, die GP tom mitgegeben wird.
+  /// Tokens, die dieser Prozess an GP tom geschickt hat (Einfügereihenfolge,
+  /// älteste zuerst). Nur damit wird ein gepufferter Redirect ohne
+  /// Wartenden als bestätigt erkannt. Nach einem Kaltstart ist die Menge leer
+  /// – dann bestätigt die App über `pendingRedirect(requestId: …)`.
+  static final Set<String> _ausgegebeneTokens = <String>{};
+
+  /// So viele ausgegebene Tokens bleiben gemerkt; ältere fallen heraus.
+  static const int _maxAusgegebeneTokens = 50;
+
+  /// Format von Token und Vorgangskennung: 32 Hex-Zeichen, klein. Hex
+  /// enthält keine der Zeichenfolgen, an denen GP tom den Anfrage-Typ per
+  /// `contains` erkennt (`login`, `status`, `transaction/…`, …).
+  static final RegExp _tokenMuster = RegExp(r'^[0-9a-f]{32}$');
+
+  static final Random _zufall = Random.secure();
+
+  /// Die Redirect-URL, die GP tom mitgegeben wird (ohne Token).
   @visibleForTesting
   static String get redirectUrl => _redirectUrl;
+
+  /// Die Redirect-URL für einen Aufruf: mit Token `<scheme>://redirect/<token>`,
+  /// ohne (Altmodus) `<scheme>://redirect`. Bewusst kein Operationsname im
+  /// Pfad, siehe [_tokenMuster].
+  @visibleForTesting
+  static String redirectUrlFuer(String? token) =>
+      token == null ? _redirectUrl : '$_redirectUrl/$token';
+
+  /// Erzeugt eine Vorgangskennung bzw. ein Redirect-Token: 32 Hex-Zeichen
+  /// (klein) aus [Random.secure]. Ein Angreifer kann sie nicht erraten.
+  static String neueVorgangsId() {
+    final buffer = StringBuffer();
+    for (var i = 0; i < 16; i++) {
+      buffer.write(_zufall.nextInt(256).toRadixString(16).padLeft(2, '0'));
+    }
+    return buffer.toString();
+  }
+
+  /// Token aus einem Redirect: genau ein Pfadsegment aus 32 Hex-Zeichen bei
+  /// Host `redirect`, sonst `null`.
+  static String? tokenFromRedirect(Uri uri) {
+    if (uri.host != 'redirect') return null;
+    final segmente = uri.pathSegments;
+    if (segmente.length != 1) return null;
+    final token = segmente.single;
+    return _tokenMuster.hasMatch(token) ? token : null;
+  }
+
+  static void _merkeToken(String token) {
+    _ausgegebeneTokens.remove(token);
+    _ausgegebeneTokens.add(token);
+    while (_ausgegebeneTokens.length > _maxAusgegebeneTokens) {
+      _ausgegebeneTokens.remove(_ausgegebeneTokens.first);
+    }
+  }
 
   /// Setzt das eigene App-Scheme, ohne den Listener zu starten.
   static void _setRedirectScheme(String uriScheme) {
@@ -116,16 +216,21 @@ class GptomAidlPluginIOS {
       // möglich bleiben (sonst lauscht die App dauerhaft nicht mehr).
       final links = _appLinks ??= AppLinks();
       _redirectSubscription?.cancel();
-      _redirectSubscription = links.uriLinkStream.listen((Uri uri) {
-        if (uri.scheme == _expectedScheme) {
-          _dispatchRedirect(uri);
-        }
-      }, onError: (e) {
+      _redirectSubscription = links.uriLinkStream.listen(_eingang, onError: (e) {
         debugPrint('GptomAidlPlugin: Fehler beim Lauschen auf Redirects: $e');
       });
       _isListening = true;
     } catch (e) {
       debugPrint('GptomAidlPlugin: Fehler bei Initialisierung von AppLinks: $e');
+    }
+  }
+
+  /// Eingehender App-Link: nur das eigene Scheme zählt. Groß-/Kleinschreibung
+  /// ist egal – `Uri` liefert das Scheme immer klein, die App darf es aber
+  /// z. B. als `MeineApp` registrieren.
+  static void _eingang(Uri uri) {
+    if (uri.scheme.toLowerCase() == _expectedScheme.toLowerCase()) {
+      _dispatchRedirect(uri);
     }
   }
 
@@ -135,9 +240,8 @@ class GptomAidlPluginIOS {
     // Rohstrom bleibt bestehen (Rückwärtskompatibilität für Mitleser).
     gptomRedirectStream.add(uri);
 
-    final reference = referenceFromRedirect(uri);
     for (final waiter in List<_RedirectWaiter>.of(_waiters)) {
-      if (waiter.accepts(reference)) {
+      if (waiter.accepts(uri)) {
         _waiters.remove(waiter);
         if (!waiter.completer.isCompleted) {
           waiter.completer.complete(uri);
@@ -146,14 +250,23 @@ class GptomAidlPluginIOS {
       }
     }
 
-    _pendingRedirects.add(GptomPendingRedirect(uri, DateTime.now()));
+    // Kein Wartender. Im Token-Modus gilt der Redirect nur als bestätigt,
+    // wenn er ein Token trägt, das dieser Prozess vergeben hat – ein
+    // gefälschter Link ohne oder mit erfundenem Token ergibt so nie "bezahlt".
+    final token = tokenFromRedirect(uri);
+    final bestaetigt = !GptomSecurityConfig.current.redirectTokenIOS ||
+        (token != null && _ausgegebeneTokens.contains(token));
+    _pendingRedirects
+        .add(GptomPendingRedirect(uri, DateTime.now(), isVerified: bestaetigt));
     while (_pendingRedirects.length > maxPendingRedirects) {
       _pendingRedirects.removeAt(0);
     }
   }
 
+  /// Nur für Tests: verarbeitet [uri] wie einen eingehenden App-Link
+  /// (inklusive Scheme-Filter).
   @visibleForTesting
-  static void debugHandleRedirect(Uri uri) => _dispatchRedirect(uri);
+  static void debugHandleRedirect(Uri uri) => _eingang(uri);
 
   /// Nur für Tests: ersetzt `launchUrl` und hebt die iOS-Prüfung auf, damit
   /// der komplette Redirect-Weg ohne Gerät prüfbar ist.
@@ -163,17 +276,83 @@ class GptomAidlPluginIOS {
   /// Läuft der iOS-Weg (echtes iOS oder Test-Ersatz)?
   static bool get isActive => Platform.isIOS || debugLauncher != null;
 
+  /// Nur für Tests: setzt den Zustand zurück. Leert auch die ausgegebenen
+  /// Tokens und simuliert damit einen Kaltstart.
   @visibleForTesting
   static void debugReset() {
     debugLauncher = null;
     _waiters.clear();
     _pendingRedirects.clear();
+    _ausgegebeneTokens.clear();
   }
 
   static Future<bool> _launch(Uri uri) {
     final launcher = debugLauncher;
     if (launcher != null) return launcher(uri);
     return launchUrl(uri);
+  }
+
+  /// Öffnet GP tom mit der URL aus [bauen] und wartet auf den zugehörigen
+  /// Redirect. [bauen] bekommt die Redirect-URL für diesen Aufruf.
+  ///
+  /// Token-Modus (Standard): ohne [token] vergibt die Methode ein eigenes.
+  /// Das Token wird vor dem Öffnen als ausgegeben gemerkt; angenommen wird
+  /// nur ein Redirect mit genau diesem Token. Altmodus
+  /// (`redirectTokenIOS = false`): kein Token, Zuordnung über
+  /// [originReferenceNum] wie bisher.
+  ///
+  /// `redirect == null && !cannotOpen` heißt Timeout. Ein später
+  /// eintreffender Redirect landet dann im Puffer ([pendingRedirect]).
+  ///
+  /// Die geöffnete URL kann Zugangsdaten enthalten und erscheint deshalb in
+  /// keiner Fehlermeldung und keinem Log. Ob der iOS-Weg aktiv ist
+  /// ([isActive]), prüft der Aufrufer.
+  static Future<({Uri? redirect, bool cannotOpen})> roundtrip(
+    Uri Function(String redirectUrl) bauen, {
+    required Duration timeout,
+    String? token,
+    String? originReferenceNum,
+  }) async {
+    if (token != null && !_tokenMuster.hasMatch(token)) {
+      throw ArgumentError(
+        'Token muss aus 32 Hex-Zeichen (klein) bestehen – mit neueVorgangsId() erzeugen.',
+        'token',
+      );
+    }
+    final vorgangsToken = GptomSecurityConfig.current.redirectTokenIOS
+        ? (token ?? neueVorgangsId())
+        : null;
+    final uri = bauen(redirectUrlFuer(vorgangsToken));
+    if (vorgangsToken != null) _merkeToken(vorgangsToken);
+
+    // Vor dem Öffnen anmelden, damit kein Redirect verpasst wird.
+    final waiter = _RedirectWaiter(
+      token: vorgangsToken,
+      expectedReference: originReferenceNum,
+    );
+    _waiters.add(waiter);
+
+    bool geoeffnet;
+    try {
+      geoeffnet = await _launch(uri);
+    } catch (_) {
+      // Die Ausnahme kann die URL enthalten – nicht weiterreichen.
+      geoeffnet = false;
+    }
+    if (!geoeffnet) {
+      _waiters.remove(waiter);
+      return (redirect: null, cannotOpen: true);
+    }
+
+    try {
+      final redirect = await waiter.completer.future.timeout(timeout);
+      return (redirect: redirect, cannotOpen: false);
+    } on TimeoutException {
+      // Der Wächter gibt auf; ein später eintreffender Redirect landet damit
+      // im Puffer und ist über pendingRedirect() abholbar.
+      _waiters.remove(waiter);
+      return (redirect: null, cannotOpen: false);
+    }
   }
 
   /// Redirects, die keinem wartenden Aufruf zugeordnet werden konnten –
@@ -183,11 +362,30 @@ class GptomAidlPluginIOS {
 
   /// Holt einen unzugeordneten Redirect ab und entfernt ihn aus dem Puffer.
   ///
-  /// Mit [originReferenceNum] gezielt den Redirect zu einer gemerkten
-  /// Zahlung; ohne Angabe den ältesten. Passt nichts, bleibt der Puffer
+  /// Mit [requestId] (der vor dem Aufruf gespeicherten Vorgangskennung) den
+  /// Redirect mit genau diesem Token. Er gilt als bestätigt
+  /// ([GptomPendingRedirect.isVerified]), auch nach einem Kaltstart – nur
+  /// GP tom kennt die Kennung. [originReferenceNum] wird dann nicht beachtet.
+  ///
+  /// Sonst mit [originReferenceNum] gezielt den Redirect zu einer gemerkten
+  /// Zahlung, ohne Angabe den ältesten; `isVerified` bleibt dabei, wie es
+  /// beim Eingang festgestellt wurde. Passt nichts, bleibt der Puffer
   /// unverändert und es kommt `null`.
-  static GptomPendingRedirect? pendingRedirect({String? originReferenceNum}) {
+  static GptomPendingRedirect? pendingRedirect({
+    String? originReferenceNum,
+    String? requestId,
+  }) {
     if (_pendingRedirects.isEmpty) return null;
+    if (requestId != null) {
+      for (var i = 0; i < _pendingRedirects.length; i++) {
+        final offen = _pendingRedirects[i];
+        if (offen.requestId == requestId) {
+          _pendingRedirects.removeAt(i);
+          return GptomPendingRedirect(offen.uri, offen.receivedAt, isVerified: true);
+        }
+      }
+      return null;
+    }
     if (originReferenceNum == null) {
       return _pendingRedirects.removeAt(0);
     }
@@ -253,45 +451,35 @@ class GptomAidlPluginIOS {
       );
     }
 
-    final uri = buildCloseBatchUri(
-      redirectUrl: _redirectUrl,
-      clientID: clientID,
-      printByPaymentApp: printByPaymentApp,
-      preferableReceiptType: preferableReceiptType,
-      clientPhone: clientPhone,
-      clientEmail: clientEmail,
+    // Eigenes Token (Token-Modus); der Kassenschnitt trägt keine Referenz,
+    // nimmt im Altmodus also den nächsten Redirect.
+    final antwort = await roundtrip(
+      (redirectUrl) => buildCloseBatchUri(
+        redirectUrl: redirectUrl,
+        clientID: clientID,
+        printByPaymentApp: printByPaymentApp,
+        preferableReceiptType: preferableReceiptType,
+        clientPhone: clientPhone,
+        clientEmail: clientEmail,
+      ),
+      timeout: redirectTimeout ?? defaultCloseBatchRedirectTimeout,
     );
 
-    // Vor dem Öffnen anmelden, damit kein Redirect verpasst wird. Der
-    // Kassenschnitt trägt keine Referenz, nimmt also den nächsten Redirect.
-    final waiter = _RedirectWaiter(null);
-    _waiters.add(waiter);
-
-    bool success;
-    try {
-      success = await _launch(uri);
-    } catch (e) {
-      _waiters.remove(waiter);
+    if (antwort.cannotOpen) {
       throw PlatformException(
         code: 'PlatformError',
         message: 'Konnte GP tom nicht öffnen',
       );
     }
 
-    if (!success) {
-      _waiters.remove(waiter);
-      throw PlatformException(
-        code: 'PlatformError',
-        message: 'Konnte GP tom nicht öffnen',
-      );
+    final redirectedUri = antwort.redirect;
+    if (redirectedUri == null) {
+      throw Exception('Kein Redirect erhalten oder Timeout');
     }
-
     try {
-      final redirectedUri = await waiter.completer.future
-          .timeout(redirectTimeout ?? defaultCloseBatchRedirectTimeout);
       return batchFromRedirect(redirectedUri);
-    } catch (e) {
-      _waiters.remove(waiter);
+    } catch (_) {
+      // Wie bisher: ein Redirect ohne lesbaren Batch meldet dieselbe Ausnahme.
       throw Exception('Kein Redirect erhalten oder Timeout');
     }
   }
@@ -346,12 +534,31 @@ class GptomAidlPluginIOS {
     return text.isEmpty ? null : text;
   }
 
-  static RequestResult _pluginFehler(int code, String errorCode, String message) {
+  static RequestResult _pluginFehler(
+    int code,
+    String errorCode,
+    String message, {
+    String? requestId,
+  }) {
     return RequestResult(
       result: code,
       responseMessage: message,
       error: ErrorInfo(errorCode: errorCode, result: code),
+      requestId: requestId,
     );
+  }
+
+  /// Prüft eine von der App vorgegebene Vorgangskennung oder erzeugt eine.
+  static String _vorgangsIdPruefen(String? requestId) {
+    if (requestId == null) return neueVorgangsId();
+    if (!_tokenMuster.hasMatch(requestId)) {
+      // Der Wert selbst bleibt aus der Meldung heraus.
+      throw ArgumentError(
+        'requestId muss aus 32 Hex-Zeichen (klein) bestehen – mit neueVorgangsId() erzeugen.',
+        'requestId',
+      );
+    }
+    return requestId;
   }
 
   /// Referenz aus einem Redirect. GP tom gibt die mitgegebene
@@ -394,6 +601,7 @@ class GptomAidlPluginIOS {
     String? clientEmail,
     int? tipAmountCents,
     bool tipCollect = false,
+    String? requestId,
   }) {
     return Uri(
       scheme: 'gptom',
@@ -404,6 +612,7 @@ class GptomAidlPluginIOS {
         'amount': amountCents.toString(),
         if (clientID != null) 'clientID': clientID,
         if (originReferenceNum != null) 'originReferenceNum': originReferenceNum,
+        if (requestId != null) 'requestID': requestId,
         'redirectUrl': redirectUrl,
         'printByPaymentApp': printByPaymentApp.toString(),
         if (preferableReceiptType != null) 'preferableReceiptType': preferableReceiptType.iosKey,
@@ -426,6 +635,7 @@ class GptomAidlPluginIOS {
     PreferableReceiptType? preferableReceiptType,
     String? clientPhone,
     String? clientEmail,
+    String? requestId,
   }) {
     return Uri(
       scheme: 'gptom',
@@ -434,6 +644,7 @@ class GptomAidlPluginIOS {
       queryParameters: {
         'amsID': amsID,
         if (clientID != null) 'clientID': clientID,
+        if (requestId != null) 'requestID': requestId,
         'redirectUrl': redirectUrl,
         'printByPaymentApp': printByPaymentApp.toString(),
         if (preferableReceiptType != null) 'preferableReceiptType': preferableReceiptType.iosKey,
@@ -449,11 +660,13 @@ class GptomAidlPluginIOS {
   ///
   /// Alles hier ist Fremd-Input: Kein Schritt darf werfen, und die
   /// Ausgänge müssen unterscheidbar bleiben (siehe [GptomResultCode]).
+  /// [requestId] steht in jedem Ergebnis, auch in den Fehlern.
   static RequestResult _requestResultFromReceipt(
     Uri redirectedUri, {
     required bool printByPaymentApp,
     required bool isCancel,
     String? originReferenceNum,
+    String? requestId,
   }) {
     final query = redirectedUri.queryParameters;
     final receiptRaw = query['receipt'];
@@ -476,6 +689,7 @@ class GptomAidlPluginIOS {
           printByPaymentApp: printByPaymentApp,
           transactionType:
               isCancel ? TransactionType.voidSell : TransactionType.sell,
+          requestId: requestId,
         );
       }
       if (_statusIsCancelled(status)) {
@@ -483,6 +697,7 @@ class GptomAidlPluginIOS {
           GptomResultCode.cancelled,
           GptomErrorCode.cancelled,
           status!,
+          requestId: requestId,
         );
       }
       // Kein Beleg und kein Erfolgs-Status → unklar/kein Abschluss. Den
@@ -491,6 +706,7 @@ class GptomAidlPluginIOS {
         GptomResultCode.noReceipt,
         GptomErrorCode.noReceipt,
         status ?? 'Kein Receipt enthalten',
+        requestId: requestId,
       );
     }
 
@@ -504,6 +720,7 @@ class GptomAidlPluginIOS {
         GptomResultCode.parseError,
         GptomErrorCode.parseError,
         'Beleg im Redirect nicht lesbar',
+        requestId: requestId,
       );
     }
     if (decoded is! Map) {
@@ -511,6 +728,7 @@ class GptomAidlPluginIOS {
         GptomResultCode.parseError,
         GptomErrorCode.parseError,
         'Beleg im Redirect hat ein unerwartetes Format',
+        requestId: requestId,
       );
     }
     final receipt = Map<String, dynamic>.from(decoded);
@@ -542,12 +760,14 @@ class GptomAidlPluginIOS {
           GptomResultCode.cancelled,
           GptomErrorCode.cancelled,
           status!,
+          requestId: requestId,
         );
       } else {
         return _pluginFehler(
           GptomResultCode.parseError,
           GptomErrorCode.parseError,
           'Beleg im Redirect ohne Ergebnis',
+          requestId: requestId,
         );
       }
     }
@@ -591,6 +811,7 @@ class GptomAidlPluginIOS {
       amsID: _stringFromReceipt(receipt['amsID']),
       time: time,
       transactionType: isCancel ? TransactionType.voidSell : TransactionType.sell,
+      requestId: requestId,
       error: fehler,
     );
   }
@@ -601,12 +822,14 @@ class GptomAidlPluginIOS {
     Uri redirectedUri, {
     required bool printByPaymentApp,
     String? originReferenceNum,
+    String? requestId,
   }) {
     return _requestResultFromReceipt(
       redirectedUri,
       printByPaymentApp: printByPaymentApp,
       isCancel: false,
       originReferenceNum: originReferenceNum,
+      requestId: requestId,
     );
   }
 
@@ -616,15 +839,24 @@ class GptomAidlPluginIOS {
     Uri redirectedUri, {
     required bool printByPaymentApp,
     String? originReferenceNum,
+    String? requestId,
   }) {
     return _requestResultFromReceipt(
       redirectedUri,
       printByPaymentApp: printByPaymentApp,
       isCancel: true,
       originReferenceNum: originReferenceNum,
+      requestId: requestId,
     );
   }
 
+  /// Verkauf über `gptom://transaction/create`.
+  ///
+  /// [requestId] ist die Vorgangskennung (32 Hex-Zeichen, siehe
+  /// [neueVorgangsId]); ohne Angabe wird eine erzeugt. Sie ist im
+  /// Token-Modus zugleich das Redirect-Token, geht bei `sendRequestIdIOS` als
+  /// `requestID` an GP tom und steht in jedem Ergebnis, auch bei Fehlern und
+  /// Timeout. Eine ungültige [requestId] wirft [ArgumentError].
   static Future<RequestResult> createTransactionIOS({
     required int amountCents,
     String? originReferenceNum,
@@ -637,26 +869,30 @@ class GptomAidlPluginIOS {
     bool tipCollect = false,
     required TransactionMethode transactionMethode,
     Duration? redirectTimeout,
+    String? requestId,
   }) async {
+    final vorgangsId = _vorgangsIdPruefen(requestId);
     if (!isActive) {
-      return RequestResult.exception();
+      return RequestResult(result: GptomResultCode.exception, requestId: vorgangsId);
     }
-    final uri = buildCreateTransactionUri(
-      amountCents: amountCents,
-      redirectUrl: _redirectUrl,
-      transactionMethode: transactionMethode,
-      originReferenceNum: originReferenceNum,
-      clientID: clientID,
-      printByPaymentApp: printByPaymentApp,
-      preferableReceiptType: preferableReceiptType,
-      clientPhone: clientPhone,
-      clientEmail: clientEmail,
-      tipAmountCents: tipAmountCents,
-      tipCollect: tipCollect,
-    );
+    final sendeRequestId = GptomSecurityConfig.current.sendRequestIdIOS;
 
     final redirectedUri = await _oeffnenUndWarten(
-      uri,
+      (redirectUrl) => buildCreateTransactionUri(
+        amountCents: amountCents,
+        redirectUrl: redirectUrl,
+        transactionMethode: transactionMethode,
+        originReferenceNum: originReferenceNum,
+        clientID: clientID,
+        printByPaymentApp: printByPaymentApp,
+        preferableReceiptType: preferableReceiptType,
+        clientPhone: clientPhone,
+        clientEmail: clientEmail,
+        tipAmountCents: tipAmountCents,
+        tipCollect: tipCollect,
+        requestId: sendeRequestId ? vorgangsId : null,
+      ),
+      vorgangsId: vorgangsId,
       originReferenceNum: originReferenceNum,
       timeout: redirectTimeout ?? defaultTransactionRedirectTimeout,
     );
@@ -666,9 +902,12 @@ class GptomAidlPluginIOS {
       redirectedUri as Uri,
       printByPaymentApp: printByPaymentApp,
       originReferenceNum: originReferenceNum,
+      requestId: vorgangsId,
     );
   }
 
+  /// Storno über `gptom://transaction/cancel`. [requestId] wie bei
+  /// [createTransactionIOS].
   static Future<RequestResult> cancelTransactionIOS({
     required String amsID,
     String? originReferenceNum,
@@ -678,23 +917,26 @@ class GptomAidlPluginIOS {
     String? clientPhone,
     String? clientEmail,
     Duration? redirectTimeout,
+    String? requestId,
   }) async {
+    final vorgangsId = _vorgangsIdPruefen(requestId);
     if (!isActive) {
-      return RequestResult.exception();
+      return RequestResult(result: GptomResultCode.exception, requestId: vorgangsId);
     }
-
-    final uri = buildCancelTransactionUri(
-      amsID: amsID,
-      redirectUrl: _redirectUrl,
-      clientID: clientID,
-      printByPaymentApp: printByPaymentApp,
-      preferableReceiptType: preferableReceiptType,
-      clientPhone: clientPhone,
-      clientEmail: clientEmail,
-    );
+    final sendeRequestId = GptomSecurityConfig.current.sendRequestIdIOS;
 
     final redirectedUri = await _oeffnenUndWarten(
-      uri,
+      (redirectUrl) => buildCancelTransactionUri(
+        amsID: amsID,
+        redirectUrl: redirectUrl,
+        clientID: clientID,
+        printByPaymentApp: printByPaymentApp,
+        preferableReceiptType: preferableReceiptType,
+        clientPhone: clientPhone,
+        clientEmail: clientEmail,
+        requestId: sendeRequestId ? vorgangsId : null,
+      ),
+      vorgangsId: vorgangsId,
       originReferenceNum: originReferenceNum,
       timeout: redirectTimeout ?? defaultTransactionRedirectTimeout,
     );
@@ -704,53 +946,44 @@ class GptomAidlPluginIOS {
       redirectedUri as Uri,
       printByPaymentApp: printByPaymentApp,
       originReferenceNum: originReferenceNum,
+      requestId: vorgangsId,
     );
   }
 
-  /// Öffnet GP tom und wartet auf den zugehörigen Redirect.
+  /// Öffnet GP tom über [roundtrip] mit der Vorgangskennung als Token und
+  /// wartet auf den zugehörigen Redirect.
   /// Liefert entweder den `Uri` des Redirects oder – wenn es dazu nicht kam –
-  /// ein fertiges Fehler-[RequestResult].
+  /// ein fertiges Fehler-[RequestResult] mit der Vorgangskennung.
   static Future<Object> _oeffnenUndWarten(
-    Uri uri, {
+    Uri Function(String redirectUrl) bauen, {
+    required String vorgangsId,
     required String? originReferenceNum,
     required Duration timeout,
   }) async {
-    // Vor dem Öffnen anmelden, damit kein Redirect verpasst wird.
-    final waiter = _RedirectWaiter(originReferenceNum);
-    _waiters.add(waiter);
+    final antwort = await roundtrip(
+      bauen,
+      timeout: timeout,
+      token: vorgangsId,
+      originReferenceNum: originReferenceNum,
+    );
+    final redirect = antwort.redirect;
+    if (redirect != null) return redirect;
 
-    bool success;
-    try {
-      success = await _launch(uri);
-    } catch (e) {
-      _waiters.remove(waiter);
+    if (antwort.cannotOpen) {
       return _pluginFehler(
         GptomResultCode.cannotOpen,
         GptomErrorCode.cannotOpen,
         'Konnte GP tom nicht öffnen',
+        requestId: vorgangsId,
       );
     }
-
-    if (!success) {
-      _waiters.remove(waiter);
-      return _pluginFehler(
-        GptomResultCode.cannotOpen,
-        GptomErrorCode.cannotOpen,
-        'Konnte GP tom nicht öffnen',
-      );
-    }
-
-    try {
-      return await waiter.completer.future.timeout(timeout);
-    } on TimeoutException {
-      // Der Wächter gibt auf; ein später eintreffender Redirect landet damit
-      // im Puffer und ist über pendingRedirect() abholbar.
-      _waiters.remove(waiter);
-      return _pluginFehler(
-        GptomResultCode.timeout,
-        GptomErrorCode.timeout,
-        'Kein Redirect erhalten oder Timeout',
-      );
-    }
+    // Zeitablauf: ein später eintreffender Redirect landet im Puffer und
+    // ist über pendingRedirect() abholbar.
+    return _pluginFehler(
+      GptomResultCode.timeout,
+      GptomErrorCode.timeout,
+      'Kein Redirect erhalten oder Timeout',
+      requestId: vorgangsId,
+    );
   }
 }

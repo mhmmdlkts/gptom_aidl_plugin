@@ -5,10 +5,22 @@ import 'package:gptom_aidl_plugin/enums/preferable_receipt_type.dart';
 import 'package:gptom_aidl_plugin/enums/transaction_methode.dart';
 import 'package:gptom_aidl_plugin/enums/transaction_type.dart';
 import 'package:gptom_aidl_plugin/gptom_aidl_plugin_ios.dart';
+import 'package:gptom_aidl_plugin/gptom_security.dart';
 
 /// Prüft die iOS-URL-Scheme-Seite: welche URLs an GP tom gehen und wie die
 /// Redirect-Antworten (Receipt/Batch) geparst werden.
 void main() {
+  // URL-Bauer und Parser im Altmodus (ohne Redirect-Token und requestID);
+  // der Token-Modus hat eigene Tests in ios_token_test.dart.
+  setUp(() {
+    GptomSecurityConfig.current =
+        const GptomSecurityConfig(redirectTokenIOS: false, sendRequestIdIOS: false);
+  });
+
+  tearDown(() {
+    GptomSecurityConfig.current = const GptomSecurityConfig();
+  });
+
   group('buildCreateTransactionUri', () {
     test('enthält alle Beleg-/Transaktionsdaten im GPTom-Format', () {
       final uri = GptomAidlPluginIOS.buildCreateTransactionUri(

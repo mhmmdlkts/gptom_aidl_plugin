@@ -5,6 +5,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:gptom_aidl_plugin/enums/transaction_methode.dart';
 import 'package:gptom_aidl_plugin/gptom_aidl_plugin.dart';
 import 'package:gptom_aidl_plugin/gptom_aidl_plugin_ios.dart';
+import 'package:gptom_aidl_plugin/gptom_security.dart';
 import 'package:gptom_aidl_plugin/models/request_result.dart';
 
 /// Der iOS-Weg kennt nur einen einzigen Rückkanal: den Redirect. Alles, was
@@ -14,12 +15,17 @@ void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
 
   setUp(() {
+    // Diese Tests prüfen die Referenz-Zuordnung ohne Redirect-Token
+    // (Altmodus); der Token-Modus hat eigene Tests in ios_token_test.dart.
+    GptomSecurityConfig.current =
+        const GptomSecurityConfig(redirectTokenIOS: false, sendRequestIdIOS: false);
     GptomAidlPluginIOS.debugReset();
     GptomAidlPluginIOS.debugSetRedirectScheme('meineapp');
   });
 
   tearDown(() {
     GptomAidlPluginIOS.debugReset();
+    GptomSecurityConfig.current = const GptomSecurityConfig();
   });
 
   /// Öffnet GP tom (simuliert) und schickt danach [redirect] zurück.
