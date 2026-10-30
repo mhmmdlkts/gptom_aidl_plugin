@@ -6,6 +6,11 @@ import android.content.ComponentName;
 import android.content.Context;
 import android.content.Intent;
 import android.content.ServiceConnection;
+import android.content.SharedPreferences;
+import android.content.pm.PackageInfo;
+import android.content.pm.PackageManager;
+import android.content.pm.Signature;
+import android.content.pm.SigningInfo;
 import android.os.Build;
 import android.os.Handler;
 import android.os.IBinder;
@@ -13,8 +18,16 @@ import android.os.Looper;
 import android.os.RemoteException;
 import android.util.Log;
 
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.Collections;
+import java.util.HashSet;
+import java.util.List;
 import java.util.Map;
 import java.util.HashMap;
+import java.util.Set;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 import io.flutter.embedding.engine.plugins.FlutterPlugin;
@@ -41,8 +54,9 @@ import cn.nexgo.smartconnect.model.LoginEntity;
  * GptomAidlPlugin
  *
  * Bindet die GPTom-Services (Payment, Login, Info) und reicht die
- * V2-JSON-Schnittstellen an Flutter durch. Über "isDev" kann zwischen
- * Dev- und Prod-Package gewählt werden.
+ * V2-JSON-Schnittstellen an Flutter durch. Über "isDev" kann je Verbindung
+ * zwischen Dev- und Prod-Package gewählt werden. Vor jedem Bind und vor dem
+ * Öffnen der GP-tom-Oberfläche wird die Signatur der App geprüft.
  */
 public class GptomAidlPlugin implements FlutterPlugin, MethodChannel.MethodCallHandler {
 
@@ -62,6 +76,16 @@ public class GptomAidlPlugin implements FlutterPlugin, MethodChannel.MethodCallH
    */
   private static final long DEFAULT_TRANSACTION_TIMEOUT_MS = 240000;
 
+  /** Gemerkte Fingerprints für das Erstvertrauen, Key = Paketname. */
+  private static final String TRUST_PREFS = "gptom_aidl_plugin_trust";
+  // Herkunft des Vertrauens, gleichlautend mit GptomTrustSource im Dart-Teil.
+  private static final String SOURCE_PINNED = "pinned";
+  private static final String SOURCE_FIRST_USE = "firstUse";
+  private static final String SOURCE_MISMATCH = "mismatch";
+  private static final String SOURCE_UNCHECKED = "unchecked";
+  private static final String SOURCE_NOT_INSTALLED = "notInstalled";
+  private static final char[] HEX = "0123456789ABCDEF".toCharArray();
+
   private MethodChannel channel;
   private Context applicationContext;
   private final Handler mainHandler = new Handler(Looper.getMainLooper());
@@ -75,7 +99,47 @@ public class GptomAidlPlugin implements FlutterPlugin, MethodChannel.MethodCallH
   private IGPTomInfoService infoService;
   private ServiceConnection infoServiceConnection;
 
-  private boolean isDev;
+  // isDev je Verbindung: ein Info-Bind auf das Dev-Paket darf die Zahlung
+  // nicht auf eine andere App umlenken.
+  private boolean paymentIsDev;
+  private boolean loginIsDev;
+  private boolean infoIsDev;
+  // Prüfvorgaben des letzten Payment-Binds, gebraucht vor openGptomUI.
+  private List<String> paymentPins = Collections.emptyList();
+  private boolean paymentVerify = true;
+
+  /** Ergebnis der Signaturprüfung der GP-tom-App. */
+  static final class TrustResult {
+    final boolean installed;
+    final boolean trusted;
+    /** pinned | firstUse | mismatch | unchecked | notInstalled */
+    final String source;
+    /** SHA-256 der aktuellen Signatur-Zertifikate, "AB:CD:…". */
+    final List<String> signatureSha256;
+    final String versionName;
+    final Integer versionCode;
+
+    TrustResult(boolean installed, boolean trusted, String source,
+                List<String> signatureSha256, String versionName, Integer versionCode) {
+      this.installed = installed;
+      this.trusted = trusted;
+      this.source = source;
+      this.signatureSha256 = signatureSha256;
+      this.versionName = versionName;
+      this.versionCode = versionCode;
+    }
+
+    Map<String, Object> toMap() {
+      Map<String, Object> map = new HashMap<>();
+      map.put("installed", installed);
+      map.put("trusted", trusted);
+      map.put("source", source);
+      map.put("signatureSha256", signatureSha256);
+      map.put("versionName", versionName);
+      map.put("versionCode", versionCode);
+      return map;
+    }
+  }
 
   /**
    * Stellt sicher, dass ein MethodChannel.Result höchstens einmal und immer auf
@@ -161,9 +225,23 @@ public class GptomAidlPlugin implements FlutterPlugin, MethodChannel.MethodCallH
         existGpTomApp(boolArgument(call, "isDev"), result);
         break;
       }
+      case "checkGpTomApp": {
+        result.success(verifyTarget(
+                targetPackage(boolArgument(call, "isDev")),
+                pinsArgument(call),
+                verifyArgument(call)).toMap());
+        break;
+      }
+      case "resetTrustedSignature": {
+        trustPrefs().edit().remove(targetPackage(boolArgument(call, "isDev"))).apply();
+        result.success(true);
+        break;
+      }
       case "bindService": {
-        isDev = boolArgument(call, "isDev");
-        bindPaymentService(result);
+        paymentIsDev = boolArgument(call, "isDev");
+        paymentPins = pinsArgument(call);
+        paymentVerify = verifyArgument(call);
+        bindPaymentService(paymentPins, paymentVerify, result);
         break;
       }
       case "unbindService": {
@@ -192,8 +270,8 @@ public class GptomAidlPlugin implements FlutterPlugin, MethodChannel.MethodCallH
         break;
       }
       case "bindLoginService": {
-        isDev = boolArgument(call, "isDev");
-        bindLoginService(result);
+        loginIsDev = boolArgument(call, "isDev");
+        bindLoginService(pinsArgument(call), verifyArgument(call), result);
         break;
       }
       case "unbindLoginService": {
@@ -214,8 +292,8 @@ public class GptomAidlPlugin implements FlutterPlugin, MethodChannel.MethodCallH
         break;
       }
       case "bindInfoService": {
-        isDev = boolArgument(call, "isDev");
-        bindInfoService(result);
+        infoIsDev = boolArgument(call, "isDev");
+        bindInfoService(pinsArgument(call), verifyArgument(call), result);
         break;
       }
       case "unbindInfoService": {
@@ -238,8 +316,33 @@ public class GptomAidlPlugin implements FlutterPlugin, MethodChannel.MethodCallH
     return value != null && value;
   }
 
-  private String targetPackage() {
-    return isDev ? DEV_PACKAGE : PROD_PACKAGE;
+  /** Fingerprints aus Dart, dort schon normalisiert ("AB:CD:…"). Fehlt das Argument: keine. */
+  private List<String> pinsArgument(MethodCall call) {
+    Object value = call.argument("trustedSignatures");
+    List<String> pins = new ArrayList<>();
+    if (value instanceof List) {
+      for (Object pin : (List<?>) value) {
+        if (pin instanceof String) {
+          pins.add((String) pin);
+        }
+      }
+    }
+    return pins;
+  }
+
+  /** Signaturprüfung an? Fehlt das Argument, wird geprüft. */
+  private boolean verifyArgument(MethodCall call) {
+    Boolean value = call.argument("verifySignature");
+    return value == null || value;
+  }
+
+  private String targetPackage(boolean dev) {
+    return dev ? DEV_PACKAGE : PROD_PACKAGE;
+  }
+
+  /** Paket der Payment-Verbindung (für Tests). */
+  String paymentPackageForTesting() {
+    return targetPackage(paymentIsDev);
   }
 
   private int bindFlags() {
@@ -250,6 +353,141 @@ public class GptomAidlPlugin implements FlutterPlugin, MethodChannel.MethodCallH
       flags |= Context.BIND_ALLOW_ACTIVITY_STARTS;
     }
     return flags;
+  }
+
+  // ---------------------------------------------------------------------------
+  // SIGNATURPRÜFUNG
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Prüft, ob die installierte GP-tom-App vertrauenswürdig ist.
+   *
+   * Mit Pins: vertraut, wenn ein Pin in der Signatur-Historie steht (deckt
+   * Key-Rotation ab). Ohne Pins: Erstvertrauen, die erste Signatur wird je
+   * Paket gemerkt und danach erzwungen. verify = false ist der Notschalter.
+   */
+  @SuppressWarnings("deprecation")
+  TrustResult verifyTarget(String pkg, List<String> pins, boolean verify) {
+    PackageInfo info;
+    try {
+      int flags = Build.VERSION.SDK_INT >= 28
+              ? PackageManager.GET_SIGNING_CERTIFICATES
+              : PackageManager.GET_SIGNATURES;
+      info = applicationContext.getPackageManager().getPackageInfo(pkg, flags);
+    } catch (PackageManager.NameNotFoundException e) {
+      return new TrustResult(false, false, SOURCE_NOT_INSTALLED,
+              Collections.<String>emptyList(), null, null);
+    }
+
+    Signature[] signer;
+    Signature[] lineage;
+    if (Build.VERSION.SDK_INT >= 28) {
+      SigningInfo signing = info.signingInfo;
+      if (signing == null) {
+        signer = new Signature[0];
+        lineage = signer;
+      } else if (signing.hasMultipleSigners()) {
+        // Mehrere Signer: dafür kennt Android keine Rotation.
+        signer = nonNull(signing.getApkContentsSigners());
+        lineage = signer;
+      } else {
+        // Historie inklusive aktuellem Zertifikat (zuletzt).
+        lineage = nonNull(signing.getSigningCertificateHistory());
+        signer = lineage.length == 0
+                ? lineage
+                : new Signature[] {lineage[lineage.length - 1]};
+      }
+    } else {
+      signer = nonNull(info.signatures);
+      lineage = signer;
+    }
+
+    List<String> signerFingerprints = fingerprints(signer);
+    Set<String> lineageFingerprints = new HashSet<>(fingerprints(lineage));
+    String versionName = info.versionName;
+    Integer versionCode = info.versionCode;
+
+    if (!verify) {
+      return new TrustResult(true, true, SOURCE_UNCHECKED,
+              signerFingerprints, versionName, versionCode);
+    }
+
+    if (pins != null && !pins.isEmpty()) {
+      for (String pin : pins) {
+        if (lineageFingerprints.contains(pin)) {
+          return new TrustResult(true, true, SOURCE_PINNED,
+                  signerFingerprints, versionName, versionCode);
+        }
+      }
+      return new TrustResult(true, false, SOURCE_MISMATCH,
+              signerFingerprints, versionName, versionCode);
+    }
+
+    // Erstvertrauen (trust on first use)
+    SharedPreferences prefs = trustPrefs();
+    String stored = prefs.getString(pkg, null);
+    if (stored == null) {
+      if (signerFingerprints.isEmpty()) {
+        // Ohne Signatur gibt es nichts zu merken – nie vertrauen.
+        return new TrustResult(true, false, SOURCE_MISMATCH,
+                signerFingerprints, versionName, versionCode);
+      }
+      List<String> sorted = new ArrayList<>(signerFingerprints);
+      Collections.sort(sorted);
+      prefs.edit().putString(pkg, String.join(",", sorted)).apply();
+      return new TrustResult(true, true, SOURCE_FIRST_USE,
+              signerFingerprints, versionName, versionCode);
+    }
+    boolean trusted = lineageFingerprints.containsAll(Arrays.asList(stored.split(",")));
+    return new TrustResult(true, trusted, trusted ? SOURCE_FIRST_USE : SOURCE_MISMATCH,
+            signerFingerprints, versionName, versionCode);
+  }
+
+  /**
+   * Signaturprüfung vor einem Bind. Abgelehnt wird mit festem Text im Log,
+   * ohne Fingerprints.
+   */
+  private boolean trustedForBind(String pkg, List<String> pins, boolean verify) {
+    TrustResult trust = verifyTarget(pkg, pins, verify);
+    if (!trust.trusted) {
+      Log.w(TAG, "Bindung an " + pkg + " abgelehnt: " + trust.source);
+    }
+    return trust.trusted;
+  }
+
+  private SharedPreferences trustPrefs() {
+    return applicationContext.getSharedPreferences(TRUST_PREFS, Context.MODE_PRIVATE);
+  }
+
+  private static Signature[] nonNull(Signature[] signatures) {
+    return signatures != null ? signatures : new Signature[0];
+  }
+
+  private static List<String> fingerprints(Signature[] signatures) {
+    List<String> list = new ArrayList<>(signatures.length);
+    for (Signature signature : signatures) {
+      list.add(fingerprint(signature));
+    }
+    return list;
+  }
+
+  /** SHA-256 über das Zertifikat, Großbuchstaben mit Doppelpunkten. */
+  private static String fingerprint(Signature signature) {
+    byte[] hash;
+    try {
+      hash = MessageDigest.getInstance("SHA-256").digest(signature.toByteArray());
+    } catch (NoSuchAlgorithmException e) {
+      // SHA-256 gehört zum Pflichtumfang jeder Java-/Android-Laufzeit.
+      throw new IllegalStateException(e);
+    }
+    StringBuilder text = new StringBuilder(hash.length * 3);
+    for (byte b : hash) {
+      if (text.length() > 0) {
+        text.append(':');
+      }
+      text.append(HEX[(b >> 4) & 0xF]).append(HEX[b & 0xF]);
+    }
+    return text.toString();
   }
 
   private void existGpTomApp(boolean checkDev, MethodChannel.Result result) {
@@ -266,8 +504,16 @@ public class GptomAidlPlugin implements FlutterPlugin, MethodChannel.MethodCallH
   // ---------------------------------------------------------------------------
   // PAYMENT SERVICE (ISmartconnectService)
   // ---------------------------------------------------------------------------
-  private void bindPaymentService(MethodChannel.Result rawResult) {
+  private void bindPaymentService(List<String> pins, boolean verify, MethodChannel.Result rawResult) {
     final SingleResult result = new SingleResult(rawResult);
+    String pkg = targetPackage(paymentIsDev);
+    if (!trustedForBind(pkg, pins, verify)) {
+      // Nach einem "false" darf auch eine bestehende Verbindung nicht weiter
+      // für Zahlungen genutzt werden.
+      unbindPaymentService();
+      result.success(false);
+      return;
+    }
     if (gptomService != null) {
       result.success(true);
       return;
@@ -275,7 +521,7 @@ public class GptomAidlPlugin implements FlutterPlugin, MethodChannel.MethodCallH
 
     try {
       Intent intent = new Intent();
-      intent.setComponent(new ComponentName(targetPackage(), PAYMENT_SERVICE_CLASS));
+      intent.setComponent(new ComponentName(pkg, PAYMENT_SERVICE_CLASS));
 
       if (serviceConnection != null) {
         try {
@@ -434,13 +680,18 @@ public class GptomAidlPlugin implements FlutterPlugin, MethodChannel.MethodCallH
       }
 
       if (openGptomUI) {
-        Intent openGptom = applicationContext.getPackageManager()
-                .getLaunchIntentForPackage(targetPackage());
-        if (openGptom != null) {
-          openGptom.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
-          applicationContext.startActivity(openGptom);
+        String paymentPackage = targetPackage(paymentIsDev);
+        if (!verifyTarget(paymentPackage, paymentPins, paymentVerify).trusted) {
+          Log.w(TAG, "GP tom nicht vertrauenswürdig – UI nicht geöffnet");
         } else {
-          Log.e(TAG, "requestTransactionV2: GPTom app not found!");
+          Intent openGptom = applicationContext.getPackageManager()
+                  .getLaunchIntentForPackage(paymentPackage);
+          if (openGptom != null) {
+            openGptom.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+            applicationContext.startActivity(openGptom);
+          } else {
+            Log.e(TAG, "requestTransactionV2: GPTom app not found!");
+          }
         }
       }
     } catch (RemoteException e) {
@@ -507,8 +758,14 @@ public class GptomAidlPlugin implements FlutterPlugin, MethodChannel.MethodCallH
   // ---------------------------------------------------------------------------
   // LOGIN SERVICE (IGPTomLoginService, ab AIDL 1.29.0)
   // ---------------------------------------------------------------------------
-  private void bindLoginService(MethodChannel.Result rawResult) {
+  private void bindLoginService(List<String> pins, boolean verify, MethodChannel.Result rawResult) {
     final SingleResult result = new SingleResult(rawResult);
+    String pkg = targetPackage(loginIsDev);
+    if (!trustedForBind(pkg, pins, verify)) {
+      unbindLoginService();
+      result.success(false);
+      return;
+    }
     if (loginService != null) {
       result.success(true);
       return;
@@ -516,7 +773,7 @@ public class GptomAidlPlugin implements FlutterPlugin, MethodChannel.MethodCallH
 
     try {
       Intent intent = new Intent(LOGIN_SERVICE_ACTION);
-      intent.setPackage(targetPackage());
+      intent.setPackage(pkg);
 
       if (applicationContext.getPackageManager().queryIntentServices(intent, 0).isEmpty()) {
         result.success(false);
@@ -656,8 +913,14 @@ public class GptomAidlPlugin implements FlutterPlugin, MethodChannel.MethodCallH
   // ---------------------------------------------------------------------------
   // INFO SERVICE (IGPTomInfoService)
   // ---------------------------------------------------------------------------
-  private void bindInfoService(MethodChannel.Result rawResult) {
+  private void bindInfoService(List<String> pins, boolean verify, MethodChannel.Result rawResult) {
     final SingleResult result = new SingleResult(rawResult);
+    String pkg = targetPackage(infoIsDev);
+    if (!trustedForBind(pkg, pins, verify)) {
+      unbindInfoService();
+      result.success(false);
+      return;
+    }
     if (infoService != null) {
       result.success(true);
       return;
@@ -665,7 +928,7 @@ public class GptomAidlPlugin implements FlutterPlugin, MethodChannel.MethodCallH
 
     try {
       Intent intent = new Intent(INFO_SERVICE_ACTION);
-      intent.setPackage(targetPackage());
+      intent.setPackage(pkg);
 
       if (applicationContext.getPackageManager().queryIntentServices(intent, 0).isEmpty()) {
         result.success(false);

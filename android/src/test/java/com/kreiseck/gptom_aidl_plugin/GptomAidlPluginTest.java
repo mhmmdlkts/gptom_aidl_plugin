@@ -270,6 +270,8 @@ public class GptomAidlPluginTest {
   public void bindService_nachErfolg_keinSpaetesFalse() {
     // Der Bind-Wächter darf nach einer geglückten Verbindung nicht mehr
     // feuern (er hielte sonst 5 s lang eine Antwort in der Hinterhand).
+    // Gebunden wird nur an eine installierte, vertrauenswürdige GP-tom-App.
+    GptomTrustTest.installiereGpTom(GptomTrustTest.PROD, GptomTrustTest.ZERT_A);
     ComponentName name = new ComponentName(
         "com.globalpayments.atom",
         "com.globalpayments.atom.data.external.api.NexgoAPIService");
