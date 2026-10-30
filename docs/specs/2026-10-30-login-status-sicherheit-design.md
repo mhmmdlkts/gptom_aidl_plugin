@@ -173,7 +173,7 @@ enum GptomLoginOutcome {
   cancelled,                // iOS CANCELLED
   timeout,
   busy,                     // es läuft schon eine Login-Operation
-  failed,                   // LOGIN_FAILED, LOGOUT_FAILED, PASSWORD_CHANGE_FAILED, failed, userNotLoggedIn
+  failed,                   // LOGIN_FAILED, LOGOUT_FAILED, PASSWORD_CHANGE_FAILED, failed, userNotLoggedIn (beim Status: abgemeldet)
   unknown,                  // unbekannter Status, roher Wert bleibt erhalten
 }
 
@@ -221,7 +221,9 @@ also an eine Fernkonfiguration hängen und braucht dafür kein neues Release.
 `merchantLocationText` (Android-Feld `merchantLocation` als String).
 `merchantLocationEntity` bleibt. `GpTomInfo.fromIosAppStatus(Map)` liest die
 iOS-Struktur (`userInfo.vatId` → `vat`, `userInfo.merchantLocation` →
-`merchantLocationEntity`).
+`merchantLocationEntity`). Gelesen wird nachsichtig: Texte über `toString()`
+(eine TID als Zahl wird `'12345678'`), Wahrheitswerte als `true`/`false` oder
+`'true'`/`'false'`, sonst `null`; Maps nur, wenn es eine Map ist.
 
 Konfiguration: `GptomAidlPlugin.security = GptomSecurityConfig(...)`
 (statisch, einmal beim App-Start). Der Dart-Teil gibt die Fingerprints bei
@@ -239,12 +241,12 @@ Konfigurationszustand.
 | `Future<GptomLoginResult> changePassword({required username, required currentPassword, required newPassword, required terminalId, String? code, …})` | Schritt 1 = `code == null` → `validationOnly: true`, Schritt 2 → `authCode: code, validationOnly: false`. `username`/`terminalId` werden nicht gebraucht | `gptom://change-password`, `code` nur in Schritt 2 |
 | `Future<GptomLoginResult> ensureLoggedIn({required FutureOr<GptomCredentials?> Function() credentials, String? expectedTerminalId, isDevAndroid, timeout})` | siehe 3. | siehe 3. |
 | `Future<RequestResult> refund({…, String? originTransactionId, …})` | `originTransactionId` optional (ohne = Rückerstattung ohne Bezug) | `gptom://transaction/refund`, neu |
-| `Future<RequestResult> transactionDetailIOS({String? amsId, String? requestId, String? clientId, Duration? timeout})` | wirft `PlatformException` (Android hat `inquireTransactionAndroid`) | `gptom://transaction/detail` |
+| `Future<RequestResult> transactionDetailIOS({String? amsId, String? requestId, String? clientId, Duration? timeout})` | wirft `PlatformException` (Android hat `inquireTransactionAndroid`) | `gptom://transaction/detail`, Ergebnis siehe 6. (Parser). Nur per `requestId` bei `sendRequestIdIOS = false`: `ArgumentError` vor dem Öffnen |
 | `sell`/`voidSell`/`refund`: neuer Parameter `requestId` (nur iOS) | ignoriert | Vorgangskennung, siehe 6. Die Kasse erzeugt sie mit `GptomAidlPlugin.neueVorgangsId()` und **speichert sie vor dem Aufruf**. Ohne Angabe erzeugt das Plugin eine, nach einem Kaltstart ist sie dann aber verloren. Sie steht immer in `RequestResult.requestId`, auch bei Timeout |
 | `sell(referenz:)` | neu: wird als `originReferenceNum` gesendet | wie bisher |
 | `sell`/`registerTransactionV2Android`: `paymentMethod` (`GptomPaymentMethod`) | `paymentMethod` im Register- und Request-JSON | ignoriert |
 | `resetTrustedSignatureAndroid({isDevAndroid})` | löscht den gemerkten Erst-Fingerprint | keine Wirkung |
-| `pendingRedirect({originReferenceNum, requestId})` | keine Wirkung | neu `requestId` (Kaltstart-Bestätigung), `GptomPendingRedirect.isVerified`, `.requestId` |
+| `pendingRedirect({originReferenceNum, requestId})` | keine Wirkung | neu `requestId` (Kaltstart-Bestätigung), `GptomPendingRedirect.isVerified`, `.requestId`. Ohne Angabe bzw. per Referenz zuerst der älteste bestätigte Eintrag, siehe 6. |
 | `static String neueVorgangsId()` | – | 32 Hex-Zeichen aus `Random.secure` |
 
 `referenz` wird auf beiden Plattformen geprüft: höchstens 20 Zeichen, nur
@@ -340,25 +342,52 @@ Bedarf aus dem sicheren Speicher kommt. Auf iOS öffnet Schritt 2 kurz GP tom
     Anfrage-Typs per `contains` prüft (`login`, `logout`, `status`,
     `transaction/…`, `batch/…`). Deshalb steht im Pfad **kein**
     Operationsname.
+  - **Token-Arten:** Das Plugin merkt sich jedes ausgegebene Token mit seiner
+    Art (höchstens 50, älteste fallen heraus): `zahlung` (Verkauf, Storno,
+    Rückerstattung) oder `sonstige` (Login, Logout, Passwortwechsel,
+    Status, Kassenschnitt, Belegabfrage).
   - Redirects mit unbekanntem oder fehlendem Token beantworten keinen
     Wartenden. Sie landen im Puffer als `GptomPendingRedirect` mit
-    `isVerified = false`. Redirects mit bekanntem Token, deren Wartender
-    schon aufgegeben hat (Timeout), landen mit `isVerified = true`.
+    `isVerified = false`. Ein später Redirect (Wartender hat schon
+    aufgegeben) mit einem `zahlung`-Token landet mit `isVerified = true`,
+    höchstens einmal je Token (weitere Kopien unbestätigt). Ein später
+    Redirect mit einem `sonstige`-Token kommt **gar nicht** in den Puffer,
+    nur in den Rohstrom: Ein verspäteter Status- oder Login-Redirect mit
+    `status=COMPLETED` darf nie als Zahlung lesbar werden.
+  - **Verbrauchte Tokens:** Nimmt ein Wartender den Redirect an oder holt
+    die Kasse einen bestätigten Eintrag ab, ist das Token verbraucht
+    (gemerkt, höchstens 50). Eine spätere Kopie desselben Redirects ist
+    unbestätigt (-1007), auch über `pendingRedirect(requestId:)`.
   - Nach einem Kaltstart kennt das Plugin keine Tokens mehr. Neue Abholung
     `pendingRedirect(requestId: gespeicherteId)`: Ein Redirect, dessen Token
-    gleich `requestId` ist, gilt als bestätigt. Die bisherige Abholung über
+    gleich `requestId` ist, gilt als bestätigt, solange das Token in diesem
+    Prozess nicht verbraucht ist. Die bisherige Abholung über
     `originReferenceNum` bleibt, bestätigt aber nur Redirects mit einem
-    Token, das in diesem Prozess vergeben wurde.
-  - **`asSellResult()`/`asVoidResult()` auf einem unbestätigten Redirect
-    liefern nie Erfolg**, sondern den neuen Code
+    offenen `zahlung`-Token aus diesem Prozess.
+  - **Abholung und Puffergrenze:** `pendingRedirect()` ohne Angabe und mit
+    `originReferenceNum` liefert zuerst den ältesten bestätigten Treffer,
+    erst wenn es keinen gibt den ältesten unbestätigten. Ist der Puffer
+    voll (10), fällt zuerst der älteste unbestätigte Eintrag heraus, erst
+    dann der älteste bestätigte. Eine Flut gefälschter Links verdrängt oder
+    verdeckt so keine echte Zahlung.
+  - **`asSellResult()`/`asVoidResult()`/`asRefundResult()` auf einem
+    unbestätigten Redirect liefern nie Erfolg**, sondern den neuen Code
     `GptomResultCode.unverified` (-1007, `istUnklar` = true,
     `error.errorCode = 'UNVERIFIED'`). Damit kann ein gefälschter Link mit
     einer erratbaren Rechnungsnummer nichts mehr als bezahlt verbuchen. Die
     Kasse klärt den Fall mit `pendingRedirect(requestId:)` oder
     `transactionDetailIOS(requestId:)`. Das ist eine bewusste
     Verhaltensänderung und steht im CHANGELOG.
+  - Unbestätigte Einträge und ihre Ergebnisse geben **keine** Kennung heraus
+    (`GptomPendingRedirect.requestId` und `RequestResult.requestId` sind
+    `null`): Das Token im Pfad hat der Absender gewählt. Die Kennung für
+    `pendingRedirect(requestId:)` kommt immer aus dem Speicher der Kasse.
   - `GptomSecurityConfig.redirectTokenIOS = false` stellt das alte Verhalten
-    her (`<scheme>://redirect`, Annahme nach Referenz).
+    her (`<scheme>://redirect`, Annahme nach Referenz, jeder Redirect gilt
+    als bestätigt). Damit kehrt auch das alte Risiko zurück: Ein später
+    Redirect von Status, Login oder Kassenschnitt landet bestätigt im Puffer
+    und wäre als Zahlung lesbar. Das ist hinnehmbar, weil es der
+    Notschalter ist (Testplan Punkt 1), nicht der Betrieb.
 - **Neue URL-Bauer** (`@visibleForTesting`): `buildLoginUri`,
   `buildLogoutUri`, `buildChangePasswordUri`, `buildStatusUri`,
   `buildRefundUri`, `buildTransactionDetailUri`. Für Login und
@@ -368,19 +397,37 @@ Bedarf aus dem sicheren Speicher kommt. Auf iOS öffnet Schritt 2 kurz GP tom
 - **Parser:** `loginResultFromRedirect(uri, operation)` bildet
   `status`/`error` auf `GptomLoginOutcome` ab. Bei change-password heißt
   `COMPLETED` ohne `code` `passwordPendingConfirmation`, mit `code`
-  `passwordChanged`. `statusFromRedirect(uri)` liest `appStatus`.
-  Refund und Detail nutzen den bestehenden Beleg-Parser
-  (`transactionType` = `refund` bzw. aus dem Beleg).
+  `passwordChanged`. `infoFromStatusRedirect(uri)` liest `appStatus`.
+  Die Statusabfrage wertet `status=ERROR` aus: `error=userNotLoggedIn` →
+  `GpTomInfo(loginState: loggedOut)` ohne Fehler (der Morgen-Check meldet
+  dann an), `networkError` → `offline`, jeder andere Fehler → `failed`.
+  `CANCELLED` → `cancelled`, `COMPLETED` ohne lesbaren `appStatus` →
+  `unknown`. Bei Login/Logout/Passwortwechsel bleibt `userNotLoggedIn`
+  `failed`.
+  Refund nutzt den bestehenden Beleg-Parser (`transactionType` = `refund`).
+  Detail (`requestResultFromDetailRedirect`) verlangt einen Beleg: Ohne
+  `receipt` ist das Ergebnis `noReceipt` (-1004), auch bei
+  `status=COMPLETED` – die Abfrage ist gelungen, über die Zahlung sagt das
+  nichts. `error.errorCode` ist dann der `error`-Wert von GP tom (sonst
+  `NO_RECEIPT`), `responseMessage` der `status`. Mit Beleg wird er wie beim
+  Verkauf gelesen, aber `transactionType` bleibt `null`: Das gleichnamige
+  Feld im Beleg ist die Zahlungsart, nicht Verkauf oder Storno.
 - **Beträge:** `_centsFromReceipt` und `Batch._asCents` lesen Dezimal-Strings
   ohne `double`, Regeln in dieser Reihenfolge:
   1. Leerzeichen entfernen.
   2. Kommen `.` und `,` beide vor, ist das letzte das Dezimalzeichen, die
-     anderen sind Tausender-Trennzeichen.
-  3. Kommt nur eine Art vor, aber mehrfach (`1.234.567`), oder genau einmal
-     mit genau drei Ziffern danach (`1.234`, `1,234`), ist es ein
-     Tausender-Trennzeichen. Drei Nachkommastellen gibt es bei EUR nicht.
+     anderen sind Tausender-Trennzeichen. Sie müssen gültige
+     Tausender-Gruppen bilden (siehe 3.), sonst `null` (`1.2.3,4`,
+     `1,2,3.4`).
+  3. Kommt nur eine Art vor, ist sie ein Tausender-Trennzeichen, wenn alle
+     Gruppen danach genau drei Ziffern haben und die erste Gruppe ein bis
+     drei Ziffern ohne führende Null (`1.234`, `1,234`, `1.234.567`). Drei
+     Nachkommastellen gibt es bei EUR nicht. `0,995` ist deshalb kein
+     Tausender (erste Gruppe `0`), sondern ein Dezimalwert. Kommt die Art
+     mehrfach vor, ohne gültige Gruppen zu bilden (`1.234.56`), ist der
+     Betrag unlesbar (`null`).
   4. Sonst ist es das Dezimalzeichen. Nachkommastellen auf zwei auffüllen,
-     mehr als zwei kaufmännisch runden.
+     mehr als zwei kaufmännisch runden (`0,995` → 100 Cent).
   5. Zahlen (`num`) aus JSON: `toString()`, `.` ist immer das
      Dezimalzeichen, Regel 3 gilt hier nicht.
   6. Unlesbar: `null` wie bisher.
@@ -407,9 +454,13 @@ Bedarf aus dem sicheren Speicher kommt. Auf iOS öffnet Schritt 2 kurz GP tom
   Puffer mit `isVerified`, Schalter `redirectTokenIOS = false`,
   Betrags-Parsing (`"4.35"`, `"4,35"`, `"1 234,50"`, `"1.234,50"`, `"10"`,
   `"1.234"`, `"1,234"`, `"1.234.567"`, `"4.355"` als String = Tausender,
-  `4.35`, `95.5`, `"abc"`), unbestätigte Redirects liefern nie Erfolg,
-  Kaltstart-Bestätigung über `requestId`, Redaction (`toString` von Credentials/Results enthält kein
-  Passwort).
+  `"0,995"` = 100, `"1.234.56"`/`"1.2.3,4"` = `null`, `4.35`, `95.5`,
+  `"abc"`), unbestätigte Redirects liefern nie Erfolg, späte Redirects von
+  Status/Login/Kassenschnitt nicht im Puffer, Kopien verbrauchter Tokens
+  unbestätigt, Abholung und Puffergrenze „bestätigt zuerst“,
+  Kaltstart-Bestätigung über `requestId`, Belegabfrage ohne Beleg = -1004,
+  Statusfehler (`userNotLoggedIn`, `networkError`), Redaction (`toString`
+  von Credentials/Results enthält kein Passwort).
 - `FakeGptomAidlPluginPlatform` bekommt die neuen Methoden, steuerbare
   Login-Ereignisse und einen `appCheck`.
 - Android (Robolectric): Signaturprüfung (Pin passt/passt nicht,
@@ -452,6 +503,12 @@ Bedarf aus dem sicheren Speicher kommt. Auf iOS öffnet Schritt 2 kurz GP tom
    `otherTerminal`.
 7. Ohne eingebauten Fingerprint startet Android mit „trust on first use“.
    Der echte Fingerprint kommt nach Testplan Punkt 4 dazu.
+8. Nur Zahlungs-Tokens können einen bestätigten Puffereintrag erzeugen,
+   und jedes Token bestätigt höchstens einmal. Späte Redirects anderer
+   Aufrufe werden verworfen. Im Altmodus (`redirectTokenIOS = false`) gilt
+   das nicht – bewusst, er ist nur der Notschalter.
+9. Die Belegabfrage zählt nur mit Beleg als Erfolg; `COMPLETED` allein
+   ergibt dort -1004.
 
 ## Offen für die Umsetzung (Entscheidung beim Bauen)
 
