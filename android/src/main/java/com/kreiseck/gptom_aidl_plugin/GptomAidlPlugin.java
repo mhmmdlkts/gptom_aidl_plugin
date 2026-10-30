@@ -104,6 +104,11 @@ public class GptomAidlPlugin implements FlutterPlugin, MethodChannel.MethodCallH
   private boolean paymentIsDev;
   private boolean loginIsDev;
   private boolean infoIsDev;
+  // Paket, an das die bestehende Verbindung gebunden ist. Wechselt isDev,
+  // wird die Verbindung neu aufgebaut.
+  private String paymentConnectionPackage;
+  private String loginConnectionPackage;
+  private String infoConnectionPackage;
   // Prüfvorgaben des letzten Payment-Binds, gebraucht vor openGptomUI.
   private List<String> paymentPins = Collections.emptyList();
   private boolean paymentVerify = true;
@@ -507,6 +512,10 @@ public class GptomAidlPlugin implements FlutterPlugin, MethodChannel.MethodCallH
   private void bindPaymentService(List<String> pins, boolean verify, MethodChannel.Result rawResult) {
     final SingleResult result = new SingleResult(rawResult);
     String pkg = targetPackage(paymentIsDev);
+    if (serviceConnection != null && !pkg.equals(paymentConnectionPackage)) {
+      // isDev gewechselt: alte Verbindung zuerst trennen, dann normal binden.
+      unbindPaymentService();
+    }
     if (!trustedForBind(pkg, pins, verify)) {
       // Nach einem "false" darf auch eine bestehende Verbindung nicht weiter
       // für Zahlungen genutzt werden.
@@ -540,6 +549,7 @@ public class GptomAidlPlugin implements FlutterPlugin, MethodChannel.MethodCallH
         }
       };
 
+      paymentConnectionPackage = pkg;
       serviceConnection = new ServiceConnection() {
         @Override
         public void onServiceConnected(ComponentName name, IBinder service) {
@@ -585,6 +595,7 @@ public class GptomAidlPlugin implements FlutterPlugin, MethodChannel.MethodCallH
       }
       serviceConnection = null;
       gptomService = null;
+      paymentConnectionPackage = null;
     }
   }
 
@@ -761,6 +772,9 @@ public class GptomAidlPlugin implements FlutterPlugin, MethodChannel.MethodCallH
   private void bindLoginService(List<String> pins, boolean verify, MethodChannel.Result rawResult) {
     final SingleResult result = new SingleResult(rawResult);
     String pkg = targetPackage(loginIsDev);
+    if (loginServiceConnection != null && !pkg.equals(loginConnectionPackage)) {
+      unbindLoginService();
+    }
     if (!trustedForBind(pkg, pins, verify)) {
       unbindLoginService();
       result.success(false);
@@ -794,6 +808,7 @@ public class GptomAidlPlugin implements FlutterPlugin, MethodChannel.MethodCallH
         }
       };
 
+      loginConnectionPackage = pkg;
       loginServiceConnection = new ServiceConnection() {
         @Override
         public void onServiceConnected(ComponentName name, IBinder binder) {
@@ -850,6 +865,7 @@ public class GptomAidlPlugin implements FlutterPlugin, MethodChannel.MethodCallH
       }
       loginServiceConnection = null;
       loginService = null;
+      loginConnectionPackage = null;
     }
   }
 
@@ -916,6 +932,9 @@ public class GptomAidlPlugin implements FlutterPlugin, MethodChannel.MethodCallH
   private void bindInfoService(List<String> pins, boolean verify, MethodChannel.Result rawResult) {
     final SingleResult result = new SingleResult(rawResult);
     String pkg = targetPackage(infoIsDev);
+    if (infoServiceConnection != null && !pkg.equals(infoConnectionPackage)) {
+      unbindInfoService();
+    }
     if (!trustedForBind(pkg, pins, verify)) {
       unbindInfoService();
       result.success(false);
@@ -949,6 +968,7 @@ public class GptomAidlPlugin implements FlutterPlugin, MethodChannel.MethodCallH
         }
       };
 
+      infoConnectionPackage = pkg;
       infoServiceConnection = new ServiceConnection() {
         @Override
         public void onServiceConnected(ComponentName name, IBinder binder) {
@@ -1005,6 +1025,7 @@ public class GptomAidlPlugin implements FlutterPlugin, MethodChannel.MethodCallH
       }
       infoServiceConnection = null;
       infoService = null;
+      infoConnectionPackage = null;
     }
   }
 

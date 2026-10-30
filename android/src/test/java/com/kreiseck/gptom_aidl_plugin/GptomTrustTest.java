@@ -21,10 +21,13 @@ import android.content.Intent;
 import android.content.IntentFilter;
 import android.content.pm.ApplicationInfo;
 import android.content.pm.PackageInfo;
+import android.content.pm.ResolveInfo;
+import android.content.pm.ServiceInfo;
 import android.content.pm.Signature;
 import android.content.pm.SigningInfo;
 import android.os.Build;
 import android.os.IBinder;
+import android.os.IInterface;
 import android.os.Looper;
 
 import org.junit.Before;
@@ -43,6 +46,8 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 
+import cn.nexgo.smartconnect.IGPTomInfoService;
+import cn.nexgo.smartconnect.IGPTomLoginService;
 import cn.nexgo.smartconnect.ISmartconnectService;
 
 import io.flutter.embedding.engine.plugins.FlutterPlugin;
@@ -384,6 +389,102 @@ public class GptomTrustTest {
     idleMainLooper();
 
     assertEquals(PROD, plugin.paymentPackageForTesting());
+  }
+
+  /**
+   * Lässt jeden Bind sofort gelingen. Der Binder liefert den gemockten
+   * Service, damit registerCallback & Co. nichts Echtes aufrufen.
+   */
+  private void dienstVerfuegbar(IInterface service) {
+    IBinder binder = mock(IBinder.class);
+    when(binder.queryLocalInterface(anyString())).thenReturn(service);
+    shadowOf(app()).setComponentNameAndServiceForBindService(
+        new ComponentName(PROD, PROD + ".Dienst"), binder);
+  }
+
+  /** Meldet einen Service per Action in PROD und DEV an (für queryIntentServices). */
+  private void actionServiceAngemeldet(String action) {
+    for (String paket : new String[] {PROD, DEV}) {
+      ResolveInfo info = new ResolveInfo();
+      info.serviceInfo = new ServiceInfo();
+      info.serviceInfo.packageName = paket;
+      info.serviceInfo.name = paket + ".Dienst";
+      shadowOf(app().getPackageManager())
+          .addResolveInfoForIntent(new Intent(action).setPackage(paket), info);
+    }
+  }
+
+  /** Paket, an das ein Bind-Intent geht (explizit per Component oder per setPackage). */
+  private static String zielpaket(Intent intent) {
+    assertNotNull(intent);
+    return intent.getComponent() != null
+        ? intent.getComponent().getPackageName()
+        : intent.getPackage();
+  }
+
+  /**
+   * Bind auf PROD, erneuter Bind mit gleichem isDev (Verbindung bleibt), dann
+   * Wechsel auf DEV (alte Verbindung wird getrennt, neuer Bind an DEV).
+   */
+  private void pruefeIsDevWechsel(String methode) {
+    installiereGpTom(PROD, ZERT_A);
+    installiereGpTom(DEV, ZERT_A);
+    List<String> pins = Collections.singletonList(FP_A);
+
+    MethodChannel.Result erster = mock(MethodChannel.Result.class);
+    plugin.onMethodCall(new MethodCall(methode, bindArgs(false, pins)), erster);
+    idleMainLooper();
+    verify(erster).success(true);
+    assertEquals(PROD, zielpaket(shadowOf(app()).getNextStartedService()));
+
+    // Gleiches isDev: Verbindung bleibt, kein neuer Bind.
+    MethodChannel.Result gleich = mock(MethodChannel.Result.class);
+    plugin.onMethodCall(new MethodCall(methode, bindArgs(false, pins)), gleich);
+    idleMainLooper();
+    verify(gleich).success(true);
+    assertNull(shadowOf(app()).getNextStartedService());
+    assertEquals(1, shadowOf(app()).getBoundServiceConnections().size());
+    assertTrue(shadowOf(app()).getUnboundServiceConnections().isEmpty());
+
+    // Wechsel auf DEV: alte Verbindung zuerst trennen, dann neu binden.
+    MethodChannel.Result wechsel = mock(MethodChannel.Result.class);
+    plugin.onMethodCall(new MethodCall(methode, bindArgs(true, pins)), wechsel);
+    idleMainLooper();
+    verify(wechsel).success(true);
+    assertEquals(1, shadowOf(app()).getUnboundServiceConnections().size());
+    assertEquals(DEV, zielpaket(shadowOf(app()).getNextStartedService()));
+  }
+
+  @Test
+  public void isDevWechsel_payment_bautVerbindungNeuAuf() {
+    dienstVerfuegbar(mock(ISmartconnectService.class));
+
+    pruefeIsDevWechsel("bindService");
+
+    assertEquals(DEV, plugin.paymentPackageForTesting());
+  }
+
+  @Test
+  public void isDevWechsel_login_bautVerbindungNeuAuf() throws Exception {
+    IGPTomLoginService login = mock(IGPTomLoginService.class);
+    dienstVerfuegbar(login);
+    actionServiceAngemeldet("com.globalpayments.atom.BIND_TO_LOGIN_SERVICE");
+
+    pruefeIsDevWechsel("bindLoginService");
+
+    // Die alte Verbindung hat ihren Callback abgemeldet.
+    verify(login).unregisterCallback(any());
+  }
+
+  @Test
+  public void isDevWechsel_info_bautVerbindungNeuAuf() throws Exception {
+    IGPTomInfoService info = mock(IGPTomInfoService.class);
+    dienstVerfuegbar(info);
+    actionServiceAngemeldet("com.globalpayments.atom.BIND_TO_INFO_SERVICE");
+
+    pruefeIsDevWechsel("bindInfoService");
+
+    verify(info).unregisterCallback(any());
   }
 
   // ---------------------------------------------------------------------------
