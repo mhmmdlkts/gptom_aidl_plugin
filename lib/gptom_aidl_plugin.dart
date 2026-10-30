@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:io';
 import 'dart:math';
 
@@ -14,13 +15,21 @@ import 'enums/cancel_mode.dart';
 import 'enums/payment_method.dart';
 import 'enums/preferable_receipt_type.dart';
 import 'enums/transaction_methode.dart';
+import 'gptom_account.dart';
 import 'gptom_aidl_plugin_platform_interface.dart';
 import 'gptom_result_code.dart';
+import 'gptom_security.dart';
+import 'models/gptom_app_check.dart';
+import 'models/gptom_login.dart';
 import 'models/register_result.dart';
 
 export 'enums/payment_method.dart';
 export 'gptom_aidl_plugin_ios.dart' show GptomPendingRedirect;
 export 'gptom_result_code.dart';
+export 'gptom_security.dart';
+export 'models/gptom_app_check.dart';
+export 'models/gptom_login.dart'
+    show GptomCredentials, GptomLoginOutcome, GptomLoginResult, GptomLoginState;
 
 /// GptomAidlPlugin:
 ///   Dart-Fassade für alle relevanten GPTom/SmartConnect-Methoden.
@@ -532,10 +541,150 @@ class GptomAidlPlugin {
   }
 
   // ---------------------------------------------------------------------------
+  // Anmeldung, Status und Absicherung (Android und iOS)
+  // ---------------------------------------------------------------------------
+  /// Sicherheitseinstellungen (Signaturprüfung auf Android, Token in der
+  /// iOS-Redirect-URL, Notschalter). Einmal beim App-Start setzen; zur
+  /// Laufzeit änderbar, z. B. aus einer Fernkonfiguration.
+  static GptomSecurityConfig get security => GptomSecurityConfig.current;
+
+  /// Ein ungültiger Fingerprint in `trustedSignaturesAndroid` wirft sofort
+  /// [ArgumentError]; die bisherige Konfiguration bleibt dann bestehen.
+  static set security(GptomSecurityConfig config) {
+    for (final pin in config.trustedSignaturesAndroid) {
+      GptomSecurityConfig.normalizeFingerprint(pin);
+    }
+    GptomSecurityConfig.current = config;
+  }
+
+  GptomAccount get _konto => GptomAccount();
+
+  /// Prüft die GP tom App: auf Android Installation, Signatur und Version
+  /// (`signatureSha256` liefert den Fingerprint für
+  /// `GptomSecurityConfig.trustedSignaturesAndroid`), auf iOS nur, ob sich
+  /// `gptom://` öffnen lässt (`source` = `notApplicable`).
+  ///
+  /// Achtung (Android): Sind keine Pins konfiguriert, speichert der erste
+  /// Aufruf den Fingerprint der gefundenen App (trust on first use) und
+  /// erzwingt ihn danach. Zurücksetzen mit [resetTrustedSignatureAndroid].
+  Future<GptomAppCheck> checkGpTomApp({bool isDevAndroid = false}) {
+    return _konto.checkGpTomApp(isDevAndroid: isDevAndroid);
+  }
+
+  /// Verwirft den gemerkten Fingerprint (trust on first use), z. B. nach
+  /// einem legitimen Signaturwechsel der GP tom App. Auf iOS ohne Wirkung.
+  Future<bool> resetTrustedSignatureAndroid({bool isDevAndroid = false}) {
+    return GptomAidlPluginPlatform.instance
+        .resetTrustedSignature(isDevAndroid: isDevAndroid);
+  }
+
+  /// Zustand von GP tom mit eindeutigem `loginState`; `null`, wenn kein
+  /// Ergebnis kam.
+  ///
+  /// Android: bindet den Info-Service bei Bedarf, [timeout] ist die Frist
+  /// des nativen Wächters (Standard 20 s). iOS: `gptom://status` mit
+  /// Redirect (Standard 30 s); die App wechselt dafür kurz zu GP tom.
+  Future<GpTomInfo?> getStatus({bool isDevAndroid = false, Duration? timeout}) {
+    return _konto.getStatus(isDevAndroid: isDevAndroid, timeout: timeout);
+  }
+
+  /// Meldet GP tom mit [credentials] an und wartet auf den Ausgang
+  /// (Standard 60 s). Das Plugin speichert die Zugangsdaten nicht.
+  ///
+  /// Nach [GptomLoginOutcome.tidReleaseRequired] (nur Android) schickt GP tom
+  /// einen Code per Mail; dann erneut mit [authCode] aufrufen. Auf iOS gibt
+  /// es das nicht, mit [authCode] kommt [GptomLoginOutcome.invalidArgument].
+  ///
+  /// Android: An eine nicht installierte oder nicht vertrauenswürdige App
+  /// gehen keine Zugangsdaten ([GptomLoginOutcome.notInstalled],
+  /// [GptomLoginOutcome.untrustedApp]). iOS: Das Passwort steht in der
+  /// `gptom://`-URL; die App wechselt zu GP tom und zurück.
+  ///
+  /// Läuft schon eine Konto-Operation: [GptomLoginOutcome.busy].
+  Future<GptomLoginResult> login(
+    GptomCredentials credentials, {
+    String? authCode,
+    bool isDevAndroid = false,
+    Duration? timeout,
+  }) {
+    return _konto.login(
+      credentials,
+      authCode: authCode,
+      isDevAndroid: isDevAndroid,
+      timeout: timeout,
+    );
+  }
+
+  /// Meldet GP tom ab und wartet auf den Ausgang (Standard 60 s).
+  Future<GptomLoginResult> logout({bool isDevAndroid = false, Duration? timeout}) {
+    return _konto.logout(isDevAndroid: isDevAndroid, timeout: timeout);
+  }
+
+  /// Passwortwechsel in zwei Schritten: erst ohne [code] (GP tom schickt
+  /// einen Code per Mail, Ausgang
+  /// [GptomLoginOutcome.passwordPendingConfirmation]), dann mit [code]
+  /// ([GptomLoginOutcome.passwordChanged]). [username] und [terminalId]
+  /// braucht nur iOS.
+  Future<GptomLoginResult> changePassword({
+    required String username,
+    required String currentPassword,
+    required String newPassword,
+    required String terminalId,
+    String? code,
+    bool isDevAndroid = false,
+    Duration? timeout,
+  }) {
+    return _konto.changePassword(
+      username: username,
+      currentPassword: currentPassword,
+      newPassword: newPassword,
+      terminalId: terminalId,
+      code: code,
+      isDevAndroid: isDevAndroid,
+      timeout: timeout,
+    );
+  }
+
+  /// Morgen-Check: prüft die GP tom App und den Status und meldet GP tom
+  /// nur an, wenn es abgemeldet ist.
+  ///
+  /// Die Zugangsdaten kommen aus dem sicheren Speicher der Kasse (z. B.
+  /// `flutter_secure_storage`), nicht aus dem Plugin. [credentials] wird nur
+  /// aufgerufen, wenn wirklich angemeldet werden muss – so wird das Passwort
+  /// nur bei Bedarf gelesen. Liefert es `null`, ist der Ausgang
+  /// [GptomLoginOutcome.noCredentials]; Exceptions daraus werden
+  /// weitergereicht.
+  ///
+  /// Ausgänge: [GptomLoginOutcome.alreadyLoggedIn] (angemeldet, TID passt zu
+  /// [expectedTerminalId], Vergleich ohne Leerzeichen am Rand),
+  /// [GptomLoginOutcome.otherTerminal] (angemeldet mit anderer TID, es wird
+  /// nicht umgeschaltet), [GptomLoginOutcome.offline] (angemeldet ohne Netz,
+  /// kein Login-Versuch), sonst das Ergebnis von [login]. `needsCode` zeigt,
+  /// dass die Kasse einen Code abfragen muss. `info` trägt den gelesenen
+  /// Status.
+  ///
+  /// iOS: Die Statusabfrage öffnet kurz GP tom, ein Login ein zweites Mal.
+  /// [timeout] gilt je Schritt (Status und Login).
+  Future<GptomLoginResult> ensureLoggedIn({
+    required FutureOr<GptomCredentials?> Function() credentials,
+    String? expectedTerminalId,
+    bool isDevAndroid = false,
+    Duration? timeout,
+  }) {
+    return _konto.ensureLoggedIn(
+      credentials: credentials,
+      expectedTerminalId: expectedTerminalId,
+      isDevAndroid: isDevAndroid,
+      timeout: timeout,
+    );
+  }
+
+  // ---------------------------------------------------------------------------
   // Login-Service (AIDL 1.29.0, nur Android)
   // ---------------------------------------------------------------------------
-  /// Bindet den GPTom-Login-Service. Muss vor [loginGpTom], [logoutGpTom]
-  /// und [changeGpTomPassword] aufgerufen werden.
+  /// Bindet den GPTom-Login-Service. Nur für die alten Methoden
+  /// [loginGpTom], [logoutGpTom] und [changeGpTomPassword] nötig;
+  /// [login], [logout] und [changePassword] binden selbst.
   Future<bool> bindLoginService({bool isDevAndroid = false}) {
     return GptomAidlPluginPlatform.instance.bindLoginService(isDevAndroid: isDevAndroid);
   }
@@ -546,6 +695,7 @@ class GptomAidlPlugin {
 
   /// Meldet den Benutzer in GP tom an. Das Ergebnis kommt asynchron über
   /// [loginStatusStream] (z. B. USER_LOGGED_IN, INVALID_CREDENTIALS, ...).
+  @Deprecated('Ersetzt durch login()')
   Future<bool> loginGpTom({
     required String username,
     required String password,
@@ -561,6 +711,7 @@ class GptomAidlPlugin {
   }
 
   /// Meldet den Benutzer in GP tom ab. Ergebnis über [loginStatusStream].
+  @Deprecated('Ersetzt durch logout()')
   Future<bool> logoutGpTom() {
     return GptomAidlPluginPlatform.instance.logoutGpTom();
   }
@@ -568,6 +719,7 @@ class GptomAidlPlugin {
   /// Ändert das GP tom Passwort. Mit [validationOnly] = true wird das neue
   /// Passwort nur validiert. Ergebnis über [loginStatusStream]
   /// (PASSWORD_CHANGED, PASSWORD_CHANGE_FAILED, ...).
+  @Deprecated('Ersetzt durch changePassword()')
   Future<bool> changeGpTomPassword({
     required String currentPassword,
     required String newPassword,

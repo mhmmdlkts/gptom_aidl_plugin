@@ -7,8 +7,6 @@ import 'package:gptom_aidl_plugin/enums/transaction_methode.dart';
 import 'package:gptom_aidl_plugin/gptom_aidl_plugin.dart';
 import 'package:gptom_aidl_plugin/gptom_aidl_plugin_method_channel.dart';
 import 'package:gptom_aidl_plugin/gptom_aidl_plugin_platform_interface.dart';
-import 'package:gptom_aidl_plugin/gptom_security.dart';
-import 'package:gptom_aidl_plugin/models/gptom_app_check.dart';
 
 /// Prüft das JSON, das tatsächlich über den MethodChannel an die native
 /// Seite geht – also genau das, was (bis auf die Steuerfelder) 1:1 an die
@@ -263,6 +261,8 @@ void main() {
     test('sendet die LoginEntity-Feldnamen', () async {
       nativeAnswer = (call) => true;
 
+      // Die alte Methode bleibt aufrufbar und wird hier bewusst weiter geprüft.
+      // ignore: deprecated_member_use_from_same_package
       await GptomAidlPlugin().loginGpTom(
         username: 'user@example.com',
         password: 'geheim',

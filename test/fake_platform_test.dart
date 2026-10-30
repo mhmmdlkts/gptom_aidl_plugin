@@ -2,7 +2,6 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:gptom_aidl_plugin/enums/preferable_receipt_type.dart';
 import 'package:gptom_aidl_plugin/enums/transaction_methode.dart';
 import 'package:gptom_aidl_plugin/gptom_aidl_plugin.dart';
-import 'package:gptom_aidl_plugin/models/gptom_app_check.dart';
 import 'package:gptom_aidl_plugin/models/login_status.dart';
 import 'package:gptom_aidl_plugin/models/request_result.dart';
 import 'package:gptom_aidl_plugin/testing.dart';

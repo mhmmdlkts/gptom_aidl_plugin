@@ -5,7 +5,6 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:gptom_aidl_plugin/enums/transaction_methode.dart';
 import 'package:gptom_aidl_plugin/gptom_aidl_plugin.dart';
 import 'package:gptom_aidl_plugin/gptom_aidl_plugin_ios.dart';
-import 'package:gptom_aidl_plugin/gptom_security.dart';
 import 'package:gptom_aidl_plugin/models/request_result.dart';
 
 /// Der iOS-Weg kennt nur einen einzigen Rückkanal: den Redirect. Alles, was
