@@ -151,7 +151,18 @@ public class GptomAidlPlugin implements FlutterPlugin, MethodChannel.MethodCallH
   private Runnable paymentBindWatchdog;
   private Runnable loginBindWatchdog;
   private Runnable infoBindWatchdog;
-  // Prüfvorgaben des letzten Payment-Binds, gebraucht vor openGptomUI.
+  // Prüfvorgaben (Pins, Prüfung an/aus) des letzten Payment-Binds.
+  //
+  // Bewusste Ausnahme von der Regel, dass die native Seite keine eigene
+  // Sicherheitskonfiguration hält: requestTransactionV2 bekommt aus Dart
+  // keine Prüfvorgaben mit, muss bei openGptomUI aber VOR dem Start der
+  // Zahlung prüfen, ob die GP tom App noch vertrauenswürdig ist (eine
+  // Zahlung, deren Oberfläche nicht geöffnet würde, darf gar nicht erst
+  // laufen – sonst UNTRUSTED_APP), und in openGptomUi vor dem startActivity
+  // noch einmal (App inzwischen getauscht). Dafür gelten die Vorgaben, mit
+  // denen die Payment-Verbindung gebunden wurde. Jeder bindService
+  // überschreibt sie; eine Änderung von GptomAidlPlugin.security wirkt hier
+  // also erst ab dem nächsten bindService.
   private List<String> paymentPins = Collections.emptyList();
   private boolean paymentVerify = true;
 

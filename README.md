@@ -137,6 +137,11 @@ wiederholt werden:
 | Unklar (`GptomResultCode.istUnklar`) | `-1001`, `-1003`, `-1004`, `-1005`, `-1007` | Nachfragen (Android: `stateRequestAndroid`/`inquireTransactionAndroid`, iOS: `pendingRedirect`, `transactionDetailIOS`), **nie** neu belasten |
 | Sicher ohne Belastung (`istOhneBelastung`) | `-1002`, `-1006` | Gefahrlos wiederholbar |
 | Ablehnung | `-1` … `-9` | Grund anzeigen, wiederholbar |
+| Nicht gestartet (Android, Ausnahme) | `PlatformException(code: 'UNTRUSTED_APP')` | Nichts belastet: die Signaturprüfung der GP tom App schlug fehl, die Zahlung lief gar nicht erst an. Erst die App klären (`checkGpTomApp`, siehe [Signaturprüfung](#signaturprüfung-android)), dann wiederholen |
+
+`UNTRUSTED_APP` werfen `sell`, `voidSell`, `refund`, `closeBatch` und
+`requestTransactionV2Android` auf Android, solange `openGptomUI` an ist
+(Standard). Die Kasse muss diese Ausnahme abfangen.
 
 ### Späte Antwort nach Zeitablauf (Android)
 
@@ -169,14 +174,26 @@ if (offen != null && offen.isVerified) {
   // ergebnis.result, ergebnis.transactionId, offen.status
 } else {
   // kein Redirect (oder unbestätigt): beim Terminal nachfragen
+  // (per requestId nur mit sendRequestIdIOS, sonst amsId angeben)
   final beleg = await plugin.transactionDetailIOS(requestId: gespeichert);
+  // beleg.result == 0: Beleg gefunden; -1004: kein Beleg, Ausgang weiter unklar
 }
 ```
 
 `pendingRedirect(originReferenceNum: ...)` gibt es weiterhin, bestätigt aber
-nur Redirects, deren Token in diesem Prozess vergeben wurde; nach einem
-Kaltstart ist der Redirect damit unbestätigt (`-1007`). Ohne Angabe kommt der
-älteste Eintrag; `plugin.pendingRedirects` zeigt alle, ohne sie zu entfernen.
+nur Redirects, deren Token in diesem Prozess für eine noch offene Zahlung
+vergeben wurde; nach einem Kaltstart ist der Redirect damit unbestätigt
+(`-1007`). Ohne Angabe (und bei mehreren Treffern zur Referenz) kommt
+**zuerst der älteste bestätigte** Eintrag, erst wenn es keinen gibt der
+älteste unbestätigte – eine Fälschung verdeckt so nie die echte Antwort. Ist
+der Puffer voll (10 Einträge), fallen zuerst unbestätigte heraus.
+`plugin.pendingRedirects` zeigt alle, ohne sie zu entfernen.
+
+In den Puffer kommen nur Redirects, die eine Zahlung sein können: Späte
+Redirects von Status, Login, Logout, Passwortwechsel, Kassenschnitt und
+Belegabfrage verwirft das Plugin (sie stehen nur im Rohstrom). Schickt GP tom
+einen schon beantworteten oder abgeholten Redirect ein zweites Mal, ist die
+Kopie unbestätigt (`-1007`), auch über `pendingRedirect(requestId:)`.
 Mehr dazu unter [Sicherheit](#sicherheit).
 
 ### Status & Details (nur Android)
@@ -276,7 +293,13 @@ switch (result.outcome) {
 Der `credentials`-Rückruf muss **immer** zu Ende kommen (auch bei Fehlern);
 solange er läuft, antworten andere Konto-Operationen mit `busy`. Auf iOS
 öffnet die Statusabfrage kurz GP tom und ein Login ein zweites Mal
-(App-Wechsel); `timeout` gilt je Schritt.
+(App-Wechsel); `timeout` gilt je Schritt. Ein `timeout` von 0 oder weniger
+zählt bei allen Konto-Operationen wie keine Angabe (Standardfrist).
+
+Auf iOS meldet GP tom einen abgemeldeten Zustand teils als Fehler
+(`status=ERROR&error=userNotLoggedIn`). Das zählt als abgemeldet, der
+Morgen-Check meldet dann an. `networkError` ergibt `offline`, jeder andere
+Fehler `failed`.
 
 ### Codes: TID-Freigabe und Passwortwechsel
 
@@ -284,7 +307,9 @@ solange er läuft, antworten andere Konto-Operationen mit `busy`. Auf iOS
   `login()` `tidReleaseRequired` und GP tom schickt einen Code per Mail.
   Die Kasse fragt ihn ab und ruft `login(credentials, authCode: code)` erneut
   auf. Auf iOS gibt es das nicht: `tidOccupied` ist ein Endzustand (manuell
-  freigeben), `authCode` ergibt dort `invalidArgument`.
+  freigeben), `authCode` ergibt dort `invalidArgument`. Ein leerer oder nur
+  aus Leerzeichen bestehender `authCode` zählt auf beiden Plattformen wie
+  keiner.
 - **Passwortwechsel (Android und iOS):** zweistufig. Schritt 1
   (`changePassword(...)` ohne `code`) ergibt `passwordPendingConfirmation`,
   GP tom schickt einen Code per Mail. Schritt 2 mit `code: ...` ergibt
@@ -370,7 +395,8 @@ Beträge und Kennungen kommen nur über `asSellResult()`/`asVoidResult()`.
 
 ### Unbestätigte Redirects (`-1007`)
 
-Ein Redirect ohne passendes Token (`isVerified == false`) ergibt nie Erfolg,
+Ein Redirect ohne passendes Token (`isVerified == false`) – oder die Kopie
+eines schon beantworteten Redirects – ergibt nie Erfolg,
 sondern `GptomResultCode.unverified` (`-1007`, `istUnklar`). Die Kasse klärt
 den Fall mit `pendingRedirect(requestId:)` oder
 `transactionDetailIOS(requestId:)` und bucht nichts allein aufgrund des
@@ -427,6 +453,10 @@ final info = await plugin.getGpTomInfo();
 plugin.gpTomInfoStream.listen((info) { /* Push bei Änderungen */ });
 ```
 
+`getGpTomInfo()` wirft nach 20 Sekunden ohne Antwort
+`PlatformException(code: 'TIMEOUT')` (nativer Wächter). Bequemer ist
+`getStatus()`: es bindet selbst und liefert in dem Fall `null`.
+
 ## Fehlercodes
 
 `RequestResult.result` bzw. `resultCode` (GP tom Return-Codes):
@@ -451,7 +481,7 @@ Zusätzliche Plugin-interne Codes (nur clientseitig, kommen nicht von GP tom):
 | -1001 | Antwort fehlte oder war nicht parsebar |
 | -1002 | GP tom App konnte nicht geöffnet werden (iOS) |
 | -1003 | Keine Antwort binnen der Frist (iOS: kein Redirect, Android: Wächter) |
-| -1004 | Redirect ohne Receipt und ohne Erfolgs-Status (iOS) |
+| -1004 | Redirect ohne Receipt und ohne Erfolgs-Status (iOS); bei `transactionDetailIOS` jeder Redirect ohne Beleg, auch mit `COMPLETED` (`error.errorCode` = `error` von GP tom, falls vorhanden) |
 | -1005 | Beleg im Redirect nicht lesbar (iOS) |
 | -1006 | Abbruch durch Kassier oder Kunde (iOS, `TASK_STATUS=CANCELED`) |
 | -1007 | Redirect ohne gültiges Token, nicht bestätigt (iOS); klären mit `pendingRedirect(requestId:)` bzw. `transactionDetailIOS` |

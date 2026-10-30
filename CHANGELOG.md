@@ -28,6 +28,34 @@
 * **iOS, Redirect-URL:** Der Pfad der `redirectUrl` ist jetzt
   `<scheme>://redirect/<token>` (vorher `<scheme>://redirect`). Deep-Link-Router
   der App dürfen diesen Pfad nicht abfangen.
+* **iOS, Puffer für späte Redirects:** `pendingRedirect()` ohne Angabe liefert
+  nicht mehr einfach den ältesten Eintrag, sondern zuerst den ältesten
+  bestätigten, erst dann den ältesten unbestätigten (ebenso bei mehreren
+  Treffern zu einer Referenz). Ist der Puffer voll, fallen zuerst
+  unbestätigte Einträge heraus. Späte Redirects von Status, Login, Logout,
+  Passwortwechsel, Kassenschnitt und Belegabfrage kommen gar nicht mehr in
+  den Puffer (nur in den Rohstrom). Schickt GP tom einen schon beantworteten
+  oder abgeholten Redirect erneut, ist die Kopie unbestätigt (`-1007`).
+* **`referenz` wird geprüft:** `sell`, `voidSell` und `refund` werfen
+  `ArgumentError`, wenn `referenz` länger als 20 Zeichen ist oder anderes als
+  druckbares ASCII enthält (z. B. Umlaute); ebenso `originReferenceNum` bei
+  `requestTransactionV2Android`. Bisher wurde `referenz` auf Android ignoriert
+  und auf iOS ungeprüft weitergegeben. Rechnungsnummern als Referenz vor dem
+  Update prüfen, sonst bricht der Zahlungsaufruf ab, bevor GP tom öffnet.
+* **Android, `UNTRUSTED_APP` bei Zahlungen:** `sell`, `voidSell`, `refund`,
+  `closeBatch` und `requestTransactionV2Android` können jetzt
+  `PlatformException(code: 'UNTRUSTED_APP')` werfen, wenn die Signatur der
+  GP tom App nicht passt (bei `openGptomUI`, Standard). Die Zahlung wurde dann
+  nicht gestartet, es ist nichts belastet. Die Kasse muss diese Ausnahme
+  abfangen.
+* **Android, `getGpTomInfo()` mit Wächter:** Die alte Methode wirft nach
+  20 Sekunden ohne Antwort `PlatformException(code: 'TIMEOUT')` (bisher
+  wartete sie unbegrenzt). `getStatus()` liefert in dem Fall `null`.
+* **`GptomAidlPluginPlatform`:** Neue abstrakte Methoden `checkGpTomApp` und
+  `resetTrustedSignature`, `getGpTomInfo` hat jetzt die Signatur
+  `getGpTomInfo({Duration? timeout})`. Eigene Unterklassen bzw.
+  Implementierungen (z. B. selbst gebaute Fakes) müssen angepasst werden;
+  `FakeGptomAidlPluginPlatform` aus `testing.dart` ist es schon.
 
 **Neu**
 
@@ -51,11 +79,14 @@
   `pendingRedirect(requestId:)`, `GptomPendingRedirect.isVerified`.
 * iOS: `refund()` über `gptom://transaction/refund` und
   `transactionDetailIOS({amsId, requestId, clientId, timeout})` zur
-  Belegabfrage.
+  Belegabfrage. Ohne Beleg im Redirect ist das Ergebnis `-1004`, auch bei
+  `status=COMPLETED`; der `error`-Wert von GP tom steht dann in
+  `error.errorCode`. `transactionType` bleibt bei der Belegabfrage leer. Eine
+  Abfrage nur per `requestId` braucht `sendRequestIdIOS` (sonst
+  `ArgumentError`, bevor GP tom öffnet).
 * `refund(originTransactionId:)` ist optional (Rückerstattung ohne Bezug).
-* `sell(referenz:)` setzt auch auf Android `originReferenceNum`;
-  `referenz` wird auf beiden Plattformen geprüft (höchstens 20 Zeichen, nur
-  ASCII). `sell(paymentMethod:)` und
+* `sell(referenz:)` setzt auch auf Android `originReferenceNum` (Prüfung
+  siehe oben). `sell(paymentMethod:)` und
   `registerTransactionV2Android(paymentMethod:)` (nur Android).
 * `loginGpTom`, `logoutGpTom` und `changeGpTomPassword` sind `@Deprecated`
   (ersetzt durch `login`, `logout`, `changePassword`), bleiben aber
@@ -67,6 +98,18 @@
 
 * iOS: Beträge im Beleg werden ohne Kommazahlen-Rechnung gelesen, mit Punkt
   oder Komma als Dezimalzeichen (`"4.35"`, `"4,35"`, `"1.234,50"`).
+  Tausender-Trennzeichen gelten nur bei gültigen Dreiergruppen (`"1.234"`,
+  `"1.234.567"`); `"0,995"` ist ein Dezimalwert, ungültige Gruppen wie
+  `"1.234.56"` ergeben `null`.
+* iOS: Die Statusabfrage wertet `status=ERROR` aus: `userNotLoggedIn` gilt
+  als abgemeldet (der Morgen-Check meldet dann an), `networkError` als
+  `offline`, sonst `failed`. `GpTomInfo.fromIosAppStatus` liest unerwartete
+  Typen nachsichtig (z. B. eine TID als Zahl).
+* `getStatus()`/`ensureLoggedIn()`: Jede Ausnahme aus der Statusabfrage
+  ergibt `failed` statt eines Absturzes. Ein `timeout` von 0 oder weniger
+  zählt bei den Konto-Operationen wie keine Angabe (Standardfrist), ein
+  leerer `authCode` wie keiner.
+* `RequestResult.fromMap` liest `requestId` (Gegenstück zu `toMap`).
 * Android: GP-tom-Aufrufe laufen nicht mehr auf dem Main-Thread (zwei
   getrennte Executoren für Zahlung und Login/Info); `getGpTomInfo` hat einen
   Wächter von 20 Sekunden.
