@@ -6,6 +6,7 @@ import 'package:gptom_aidl_plugin/enums/transaction_methode.dart';
 import 'package:gptom_aidl_plugin/enums/transaction_type.dart';
 import 'package:gptom_aidl_plugin/gptom_aidl_plugin.dart';
 import 'package:gptom_aidl_plugin/gptom_aidl_plugin_platform_interface.dart';
+import 'package:gptom_aidl_plugin/models/gptom_app_check.dart';
 import 'package:gptom_aidl_plugin/models/gptom_info.dart';
 import 'package:gptom_aidl_plugin/models/inquire_result.dart';
 import 'package:gptom_aidl_plugin/models/login_status.dart';
@@ -19,6 +20,14 @@ class _FakePlatform extends GptomAidlPluginPlatform {
 
   @override
   Future<bool> existGpTomApp({bool isDevAndroid = false}) async => true;
+
+  @override
+  Future<GptomAppCheck> checkGpTomApp({bool isDevAndroid = false}) async =>
+      const GptomAppCheck(
+          installed: true, trusted: true, source: GptomTrustSource.pinned);
+
+  @override
+  Future<bool> resetTrustedSignature({bool isDevAndroid = false}) async => true;
 
   @override
   Future<bool> bindService({bool isDevAndroid = false}) async => true;
@@ -92,7 +101,7 @@ class _FakePlatform extends GptomAidlPluginPlatform {
   Future<void> unbindInfoService() async {}
 
   @override
-  Future<GpTomInfo?> getGpTomInfo() async => null;
+  Future<GpTomInfo?> getGpTomInfo({Duration? timeout}) async => null;
 
   @override
   Stream<GpTomInfo> get gpTomInfoStream => const Stream.empty();

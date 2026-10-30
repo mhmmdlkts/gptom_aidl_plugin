@@ -2,6 +2,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:gptom_aidl_plugin/enums/preferable_receipt_type.dart';
 import 'package:gptom_aidl_plugin/enums/transaction_methode.dart';
 import 'package:gptom_aidl_plugin/gptom_aidl_plugin.dart';
+import 'package:gptom_aidl_plugin/models/gptom_app_check.dart';
 import 'package:gptom_aidl_plugin/models/login_status.dart';
 import 'package:gptom_aidl_plugin/models/request_result.dart';
 import 'package:gptom_aidl_plugin/testing.dart';
@@ -68,5 +69,50 @@ void main() {
     fake.bindServiceResult = false;
     expect(await plugin.bindService(), isFalse);
     expect(fake.bindServiceCalls, 1);
+  });
+
+  test('onLogin-Ereignis kommt im loginStatusStream an', () async {
+    fake.onLogin = (call) => GpTomLoginEvent(
+          status: GpTomLoginStatus.userLoggedIn,
+          rawStatus: 'USER_LOGGED_IN',
+        );
+    final eventFuture = plugin.loginStatusStream.first;
+
+    await GptomAidlPluginPlatform.instance.loginGpTom(
+      username: 'livia@melisse-nails.example',
+      password: 'pw',
+      terminalId: '12345678',
+    );
+
+    expect((await eventFuture).isLoggedIn, isTrue);
+    expect(fake.loginCalls.single['terminalId'], '12345678');
+  });
+
+  test('onLogout und onChangePassword liefern Ereignisse', () async {
+    fake.onLogout = () => GpTomLoginEvent(
+        status: GpTomLoginStatus.userLoggedOut, rawStatus: 'USER_LOGGED_OUT');
+    final f = plugin.loginStatusStream.first;
+    await GptomAidlPluginPlatform.instance.logoutGpTom();
+    expect((await f).status, GpTomLoginStatus.userLoggedOut);
+  });
+
+  test('getGpTomInfoError wird geworfen, Timeout wird aufgezeichnet', () async {
+    fake.getGpTomInfoError = StateError('kaputt');
+    await expectLater(
+      GptomAidlPluginPlatform.instance
+          .getGpTomInfo(timeout: const Duration(seconds: 3)),
+      throwsStateError,
+    );
+    expect(fake.getGpTomInfoTimeouts, [const Duration(seconds: 3)]);
+    expect(fake.getGpTomInfoCalls, 1);
+  });
+
+  test('checkGpTomApp und resetTrustedSignature werden gezählt', () async {
+    final check = await GptomAidlPluginPlatform.instance.checkGpTomApp();
+    await GptomAidlPluginPlatform.instance.resetTrustedSignature();
+    expect(check.trusted, isTrue);
+    expect(check.source, GptomTrustSource.pinned);
+    expect(fake.checkGpTomAppCalls, 1);
+    expect(fake.resetTrustedSignatureCalls, 1);
   });
 }

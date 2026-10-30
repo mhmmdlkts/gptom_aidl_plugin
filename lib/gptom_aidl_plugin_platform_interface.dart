@@ -1,3 +1,4 @@
+import 'package:gptom_aidl_plugin/models/gptom_app_check.dart';
 import 'package:gptom_aidl_plugin/models/gptom_info.dart';
 import 'package:gptom_aidl_plugin/models/inquire_result.dart';
 import 'package:gptom_aidl_plugin/models/login_status.dart';
@@ -30,6 +31,16 @@ abstract class GptomAidlPluginPlatform extends PlatformInterface {
   }
 
   Future<bool> existGpTomApp({bool isDevAndroid = false});
+
+  /// Prüft die GP tom App (installiert, Signatur vertrauenswürdig).
+  ///
+  /// Achtung: Ohne konfigurierte Pins merkt sich der erste Aufruf den
+  /// Fingerprint (trust on first use) – es ist keine reine Leseabfrage.
+  Future<GptomAppCheck> checkGpTomApp({bool isDevAndroid = false});
+
+  /// Verwirft den gemerkten Fingerprint (trust on first use), z. B. nach
+  /// einem legitimen Signaturwechsel der GP tom App. Nur Android.
+  Future<bool> resetTrustedSignature({bool isDevAndroid = false});
   Future<bool> bindService({bool isDevAndroid = false});
   Future<void> unbindService();
   Future<RegisterResult> registerTransactionV2Android(Map<String, dynamic> params);
@@ -67,7 +78,9 @@ abstract class GptomAidlPluginPlatform extends PlatformInterface {
   // --- Info-Service (nur Android) ---
   Future<bool> bindInfoService({bool isDevAndroid = false});
   Future<void> unbindInfoService();
-  Future<GpTomInfo?> getGpTomInfo();
+  /// Fragt die App-Infos ab. Mit [timeout] bricht der native Wächter ab und
+  /// wirft eine `PlatformException` mit Code `TIMEOUT`.
+  Future<GpTomInfo?> getGpTomInfo({Duration? timeout});
 
   /// Push-Updates der GP tom App-Infos.
   Stream<GpTomInfo> get gpTomInfoStream;

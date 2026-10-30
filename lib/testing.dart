@@ -24,6 +24,7 @@ library;
 
 import 'dart:async';
 
+import 'models/gptom_app_check.dart';
 import 'models/gptom_info.dart';
 import 'models/inquire_result.dart';
 import 'models/login_status.dart';
@@ -51,6 +52,9 @@ class FakeGptomAidlPluginPlatform extends GptomAidlPluginPlatform {
   int unbindInfoServiceCalls = 0;
   int logoutCalls = 0;
   int getGpTomInfoCalls = 0;
+  int checkGpTomAppCalls = 0;
+  int resetTrustedSignatureCalls = 0;
+  final List<Duration?> getGpTomInfoTimeouts = [];
 
   // --- Konfigurierbare Antworten --------------------------------------------
   // Für Szenarien (z. B. "erst abgelehnt, dann erfolgreich" oder ein
@@ -74,12 +78,28 @@ class FakeGptomAidlPluginPlatform extends GptomAidlPluginPlatform {
     tipAmountCents: 0,
   );
   GpTomInfo? gpTomInfo;
+  GptomAppCheck appCheck = const GptomAppCheck(
+    installed: true,
+    trusted: true,
+    source: GptomTrustSource.pinned,
+  );
+
+  /// Wird von [getGpTomInfo] geworfen, wenn gesetzt (z. B. eine
+  /// `PlatformException` mit Code `TIMEOUT`).
+  Object? getGpTomInfoError;
 
   // --- Szenario-Handler (optional, haben Vorrang) ----------------------------
   RegisterResult Function(Map<String, dynamic> params)? onRegister;
   RequestResult Function(Map<String, dynamic> params)? onRequest;
   StateResult Function(String transactionId)? onStateRequest;
   InquireResult Function(String transactionId)? onInquire;
+
+  /// Login-/Logout-/Passwort-Handler: Ein zurückgegebenes Ereignis wird nach
+  /// dem Aufzeichnen des Aufrufs per Microtask in [loginStatusStream]
+  /// gegeben, `null` sendet nichts.
+  GpTomLoginEvent? Function(Map<String, Object?> call)? onLogin;
+  GpTomLoginEvent? Function()? onLogout;
+  GpTomLoginEvent? Function(Map<String, Object?> call)? onChangePassword;
 
   final StreamController<GpTomLoginEvent> _loginStatusController =
       StreamController<GpTomLoginEvent>.broadcast();
@@ -103,6 +123,24 @@ class FakeGptomAidlPluginPlatform extends GptomAidlPluginPlatform {
   // --- GptomAidlPluginPlatform ----------------------------------------------
   @override
   Future<bool> existGpTomApp({bool isDevAndroid = false}) async => existsGpTomApp;
+
+  @override
+  Future<GptomAppCheck> checkGpTomApp({bool isDevAndroid = false}) async {
+    checkGpTomAppCalls++;
+    return appCheck;
+  }
+
+  @override
+  Future<bool> resetTrustedSignature({bool isDevAndroid = false}) async {
+    resetTrustedSignatureCalls++;
+    return true;
+  }
+
+  void _sendeLoginEreignis(GpTomLoginEvent? event) {
+    if (event != null) {
+      scheduleMicrotask(() => _loginStatusController.add(event));
+    }
+  }
 
   @override
   Future<bool> bindService({bool isDevAndroid = false}) async {
@@ -163,18 +201,21 @@ class FakeGptomAidlPluginPlatform extends GptomAidlPluginPlatform {
     required String terminalId,
     String? authCode,
   }) async {
-    loginCalls.add({
+    final call = <String, Object?>{
       'username': username,
       'password': password,
       'terminalId': terminalId,
       'authCode': authCode,
-    });
+    };
+    loginCalls.add(call);
+    _sendeLoginEreignis(onLogin?.call(call));
     return loginResult;
   }
 
   @override
   Future<bool> logoutGpTom() async {
     logoutCalls++;
+    _sendeLoginEreignis(onLogout?.call());
     return logoutResult;
   }
 
@@ -185,12 +226,14 @@ class FakeGptomAidlPluginPlatform extends GptomAidlPluginPlatform {
     String? authCode,
     bool validationOnly = false,
   }) async {
-    changePasswordCalls.add({
+    final call = <String, Object?>{
       'currentPassword': currentPassword,
       'newPassword': newPassword,
       'authCode': authCode,
       'validationOnly': validationOnly,
-    });
+    };
+    changePasswordCalls.add(call);
+    _sendeLoginEreignis(onChangePassword?.call(call));
     return changePasswordResult;
   }
 
@@ -209,8 +252,13 @@ class FakeGptomAidlPluginPlatform extends GptomAidlPluginPlatform {
   }
 
   @override
-  Future<GpTomInfo?> getGpTomInfo() async {
+  Future<GpTomInfo?> getGpTomInfo({Duration? timeout}) async {
     getGpTomInfoCalls++;
+    getGpTomInfoTimeouts.add(timeout);
+    final fehler = getGpTomInfoError;
+    if (fehler != null) {
+      throw fehler;
+    }
     return gpTomInfo;
   }
 

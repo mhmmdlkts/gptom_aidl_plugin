@@ -7,6 +7,8 @@ import 'package:gptom_aidl_plugin/enums/transaction_methode.dart';
 import 'package:gptom_aidl_plugin/gptom_aidl_plugin.dart';
 import 'package:gptom_aidl_plugin/gptom_aidl_plugin_method_channel.dart';
 import 'package:gptom_aidl_plugin/gptom_aidl_plugin_platform_interface.dart';
+import 'package:gptom_aidl_plugin/gptom_security.dart';
+import 'package:gptom_aidl_plugin/models/gptom_app_check.dart';
 
 /// Prüft das JSON, das tatsächlich über den MethodChannel an die native
 /// Seite geht – also genau das, was (bis auf die Steuerfelder) 1:1 an die
@@ -34,6 +36,8 @@ void main() {
 
   tearDown(() {
     MethodChannelGptomAidlPlugin.debugBypassPlatformChecks = false;
+    MethodChannelGptomAidlPlugin.debugReleaseMode = null;
+    GptomSecurityConfig.current = const GptomSecurityConfig();
     TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
         .setMockMethodCallHandler(channel, null);
   });
@@ -273,6 +277,115 @@ void main() {
         'terminalId': '11263520',
         'authCode': null,
       });
+    });
+  });
+
+  group('Sicherheitsargumente, App-Prüfung und Timeouts', () {
+    final pinKlein = List.filled(32, 'ab').join();
+    final pinNormal = List.filled(32, 'AB').join(':');
+
+    test('bindService schickt normalisierte Pins und verifySignature', () async {
+      GptomSecurityConfig.current = GptomSecurityConfig(
+        trustedSignaturesAndroid: [pinKlein],
+        verifySignatureAndroid: false,
+      );
+      nativeAnswer = (call) => true;
+
+      await GptomAidlPluginPlatform.instance.bindService();
+      await GptomAidlPluginPlatform.instance.bindLoginService();
+      await GptomAidlPluginPlatform.instance.bindInfoService();
+
+      expect(nativeCalls.map((c) => c.method),
+          ['bindService', 'bindLoginService', 'bindInfoService']);
+      for (final c in nativeCalls) {
+        final args = Map<String, dynamic>.from(c.arguments as Map);
+        expect(args['trustedSignatures'], [pinNormal]);
+        expect(args['verifySignature'], false);
+        expect(args['isDev'], false);
+      }
+    });
+
+    test('Dev-Paket im Release gesperrt', () async {
+      MethodChannelGptomAidlPlugin.debugReleaseMode = true;
+      nativeAnswer = (call) => true;
+
+      final ergebnis =
+          await GptomAidlPluginPlatform.instance.bindLoginService(isDevAndroid: true);
+
+      expect(ergebnis, isFalse);
+      expect(nativeCalls.where((c) => c.method == 'bindLoginService'), isEmpty);
+
+      GptomSecurityConfig.current =
+          const GptomSecurityConfig(allowDevPackageInRelease: true);
+      final erlaubt =
+          await GptomAidlPluginPlatform.instance.bindLoginService(isDevAndroid: true);
+      expect(erlaubt, isTrue);
+      expect(nativeCalls.where((c) => c.method == 'bindLoginService'), hasLength(1));
+    });
+
+    test('checkGpTomApp parst die native Map', () async {
+      nativeAnswer = (call) => {
+            'installed': true,
+            'trusted': true,
+            'source': 'pinned',
+            'signatureSha256': [pinNormal],
+            'versionName': '1.2.3',
+            'versionCode': 42,
+          };
+
+      final check = await GptomAidlPluginPlatform.instance.checkGpTomApp();
+
+      expect(check.installed, isTrue);
+      expect(check.trusted, isTrue);
+      expect(check.source, GptomTrustSource.pinned);
+      expect(check.signatureSha256, [pinNormal]);
+      expect(check.versionCode, 42);
+      final args = Map<String, dynamic>.from(nativeCalls.single.arguments as Map);
+      expect(nativeCalls.single.method, 'checkGpTomApp');
+      expect(args['verifySignature'], true);
+      expect(args['trustedSignatures'], <String>[]);
+    });
+
+    test('checkGpTomApp meldet Dev-Paket im Release als gesperrt', () async {
+      MethodChannelGptomAidlPlugin.debugReleaseMode = true;
+      nativeAnswer = (call) => call.method == 'existGpTomApp';
+
+      final check =
+          await GptomAidlPluginPlatform.instance.checkGpTomApp(isDevAndroid: true);
+
+      expect(check.installed, isTrue);
+      expect(check.trusted, isFalse);
+      expect(check.source, GptomTrustSource.devPackageBlocked);
+      expect(nativeCalls.map((c) => c.method), ['existGpTomApp']);
+    });
+
+    test('resetTrustedSignature ruft nativ auf', () async {
+      nativeAnswer = (call) => true;
+      expect(await GptomAidlPluginPlatform.instance.resetTrustedSignature(), isTrue);
+      expect(nativeCalls.single.method, 'resetTrustedSignature');
+    });
+
+    test('getGpTomInfo schickt timeoutMs', () async {
+      nativeAnswer = (call) => null;
+
+      await GptomAidlPluginPlatform.instance
+          .getGpTomInfo(timeout: const Duration(seconds: 7));
+      await GptomAidlPluginPlatform.instance.getGpTomInfo();
+
+      final erster = nativeCalls[0].arguments as Map;
+      expect(erster['timeoutMs'], 7000);
+      expect(nativeCalls[1].arguments, isNull);
+    });
+
+    test('register-TIMEOUT wird zu RegisterResult -1003', () async {
+      nativeAnswer = (call) =>
+          throw PlatformException(code: 'TIMEOUT', message: 'keine Antwort');
+
+      final r = await GptomAidlPluginPlatform.instance
+          .registerTransactionV2Android({'amount': 100});
+
+      expect(r.resultCode, GptomResultCode.timeout);
+      expect(r.resultCode, -1003);
     });
   });
 }

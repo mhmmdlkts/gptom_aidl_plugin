@@ -3,6 +3,8 @@ import 'dart:convert';
 import 'dart:io';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
+import 'package:gptom_aidl_plugin/gptom_security.dart';
+import 'package:gptom_aidl_plugin/models/gptom_app_check.dart';
 import 'package:gptom_aidl_plugin/models/gptom_info.dart';
 import 'package:gptom_aidl_plugin/models/inquire_result.dart';
 import 'package:gptom_aidl_plugin/models/login_status.dart';
@@ -61,6 +63,29 @@ class MethodChannelGptomAidlPlugin extends GptomAidlPluginPlatform {
   @visibleForTesting
   static bool debugBypassPlatformChecks = false;
 
+  /// Nur für Tests: überschreibt, ob als Release-Build gerechnet wird.
+  @visibleForTesting
+  static bool? debugReleaseMode;
+
+  bool get _isRelease => debugReleaseMode ?? kReleaseMode;
+
+  /// Dev-Paket (`.dev`) in einem Release-Build ohne ausdrückliche Freigabe.
+  bool _devGesperrt(bool isDevAndroid) =>
+      isDevAndroid &&
+      _isRelease &&
+      !GptomSecurityConfig.current.allowDevPackageInRelease;
+
+  /// Argumente für Bind- und Prüfaufrufe. Ein ungültiger Pin wirft
+  /// [ArgumentError] – lieber laut scheitern als stillschweigend ohne Pin.
+  Map<String, Object?> _sicherheitsArgs(bool isDevAndroid) {
+    final config = GptomSecurityConfig.current;
+    return {
+      'isDev': isDevAndroid,
+      'trustedSignatures': config.normalizedSignaturesAndroid,
+      'verifySignature': config.verifySignatureAndroid,
+    };
+  }
+
   void _requireAndroid(String method) {
     if (debugBypassPlatformChecks) {
       return;
@@ -85,13 +110,57 @@ class MethodChannelGptomAidlPlugin extends GptomAidlPluginPlatform {
   }
 
   @override
+  Future<GptomAppCheck> checkGpTomApp({bool isDevAndroid = false}) async {
+    if (Platform.isIOS) {
+      final installed = await canLaunchUrl(Uri.parse('gptom://'));
+      return GptomAppCheck(
+        installed: installed,
+        trusted: installed,
+        source: installed
+            ? GptomTrustSource.notApplicable
+            : GptomTrustSource.notInstalled,
+      );
+    }
+    if (_devGesperrt(isDevAndroid)) {
+      return GptomAppCheck(
+        installed: await existGpTomApp(isDevAndroid: true),
+        trusted: false,
+        source: GptomTrustSource.devPackageBlocked,
+      );
+    }
+    final args = _sicherheitsArgs(isDevAndroid);
+    final raw = await methodChannel.invokeMethod<Map>('checkGpTomApp', args);
+    if (raw == null) {
+      return const GptomAppCheck(
+        installed: false,
+        trusted: false,
+        source: GptomTrustSource.notInstalled,
+      );
+    }
+    return GptomAppCheck.fromMap(raw);
+  }
+
+  @override
+  Future<bool> resetTrustedSignature({bool isDevAndroid = false}) async {
+    if (Platform.isIOS) {
+      return false;
+    }
+    return await methodChannel.invokeMethod<bool>('resetTrustedSignature', {
+      'isDev': isDevAndroid,
+    }) ?? false;
+  }
+
+  @override
   Future<bool> bindService({bool isDevAndroid = false}) async {
     if (Platform.isIOS) {
       return true;
     }
-    return await methodChannel.invokeMethod<bool>('bindService', {
-      'isDev': isDevAndroid,
-    }) ?? false;
+    if (_devGesperrt(isDevAndroid)) {
+      return false;
+    }
+    return await methodChannel.invokeMethod<bool>(
+            'bindService', _sicherheitsArgs(isDevAndroid)) ??
+        false;
   }
 
   @override
@@ -106,9 +175,18 @@ class MethodChannelGptomAidlPlugin extends GptomAidlPluginPlatform {
   Future<RegisterResult> registerTransactionV2Android(Map<String, dynamic> params) async {
     _requireAndroid('registerTransactionV2Android');
     final jsonParams = jsonEncode(params);
-    final String? result = await methodChannel.invokeMethod<String>('registerTransactionV2', {
-      'registerJson': jsonParams,
-    });
+    final String? result;
+    try {
+      result = await methodChannel.invokeMethod<String>('registerTransactionV2', {
+        'registerJson': jsonParams,
+      });
+    } on PlatformException catch (e) {
+      // Der native Wächter meldet, dass GP tom nicht geantwortet hat.
+      if (e.code == GptomErrorCode.timeout) {
+        return RegisterResult(resultCode: GptomResultCode.timeout);
+      }
+      rethrow;
+    }
 
     if (result == null) {
       return RegisterResult.formatException();
@@ -188,9 +266,12 @@ class MethodChannelGptomAidlPlugin extends GptomAidlPluginPlatform {
   @override
   Future<bool> bindLoginService({bool isDevAndroid = false}) async {
     _requireAndroid('bindLoginService');
-    return await methodChannel.invokeMethod<bool>('bindLoginService', {
-      'isDev': isDevAndroid,
-    }) ?? false;
+    if (_devGesperrt(isDevAndroid)) {
+      return false;
+    }
+    return await methodChannel.invokeMethod<bool>(
+            'bindLoginService', _sicherheitsArgs(isDevAndroid)) ??
+        false;
   }
 
   @override
@@ -248,9 +329,12 @@ class MethodChannelGptomAidlPlugin extends GptomAidlPluginPlatform {
   @override
   Future<bool> bindInfoService({bool isDevAndroid = false}) async {
     _requireAndroid('bindInfoService');
-    return await methodChannel.invokeMethod<bool>('bindInfoService', {
-      'isDev': isDevAndroid,
-    }) ?? false;
+    if (_devGesperrt(isDevAndroid)) {
+      return false;
+    }
+    return await methodChannel.invokeMethod<bool>(
+            'bindInfoService', _sicherheitsArgs(isDevAndroid)) ??
+        false;
   }
 
   @override
@@ -262,9 +346,13 @@ class MethodChannelGptomAidlPlugin extends GptomAidlPluginPlatform {
   }
 
   @override
-  Future<GpTomInfo?> getGpTomInfo() async {
+  Future<GpTomInfo?> getGpTomInfo({Duration? timeout}) async {
     _requireAndroid('getGpTomInfo');
-    final String? raw = await methodChannel.invokeMethod<String>('getGpTomInfo');
+    // Eine PlatformException mit Code TIMEOUT wird bewusst weitergereicht.
+    final String? raw = await methodChannel.invokeMethod<String>(
+      'getGpTomInfo',
+      timeout == null ? null : {'timeoutMs': timeout.inMilliseconds},
+    );
     if (raw == null) {
       return null;
     }
