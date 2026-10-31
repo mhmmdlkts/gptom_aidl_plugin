@@ -1,3 +1,11 @@
+## 0.3.3
+
+* **Neu:** `openApp({isDevAndroid})` öffnet den Startbildschirm von Genius Pay,
+  damit der Fahrer dessen Meldung sieht (z. B. „Terminal wird aktiviert“).
+  `true`: Start ans System übergeben; `false`: nicht installiert, Signatur
+  nicht vertrauenswürdig oder Fehler. Wirft nie. Android prüft die Signatur
+  wie beim Zahlungsstart, iOS öffnet `gptom://`.
+
 ## 0.3.2
 
 * **Texte:** GP tom heißt jetzt Genius Pay. Alle deutschen Fehlermeldungen,

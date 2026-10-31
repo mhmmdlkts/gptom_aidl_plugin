@@ -46,6 +46,47 @@ void main() {
     return Map<String, dynamic>.from(jsonDecode(args['requestJson'] as String));
   }
 
+  group('openApp', () {
+    test('sendet openGptomApp mit isDev und gibt true/false zurück', () async {
+      nativeAnswer = (call) => true;
+      expect(await GptomAidlPlugin().openApp(), isTrue);
+      expect(nativeCalls.single.method, 'openGptomApp');
+      expect(Map<String, dynamic>.from(nativeCalls.single.arguments as Map),
+          {'isDev': false, 'trustedSignatures': <Object?>[], 'verifySignature': true});
+
+      nativeCalls.clear();
+      nativeAnswer = (call) => false;
+      expect(await GptomAidlPlugin().openApp(isDevAndroid: true), isFalse);
+      expect(Map<String, dynamic>.from(nativeCalls.single.arguments as Map),
+          containsPair('isDev', true));
+    });
+
+    test('sendet die konfigurierten Pins und verifySignature mit', () async {
+      const pin =
+          '9F:64:A7:47:E1:B9:7F:13:1F:AB:B6:B4:47:29:6C:9B:6F:02:01:E7:9F:B3:C5:35:6E:6C:77:E8:9B:6A:80:6A';
+      GptomSecurityConfig.current = const GptomSecurityConfig(
+          trustedSignaturesAndroid: [pin], verifySignatureAndroid: false);
+      nativeAnswer = (call) => true;
+      await GptomAidlPlugin().openApp();
+      final args = Map<String, dynamic>.from(nativeCalls.single.arguments as Map);
+      expect(args['trustedSignatures'], [pin]);
+      expect(args['verifySignature'], false);
+    });
+
+    test('Ausnahme der nativen Seite ergibt false', () async {
+      nativeAnswer = (call) => throw PlatformException(code: 'X');
+      expect(await GptomAidlPlugin().openApp(), isFalse);
+    });
+
+    test('Dev-Paket im Release ohne Freigabe: false, kein nativer Aufruf',
+        () async {
+      MethodChannelGptomAidlPlugin.debugReleaseMode = true;
+      nativeAnswer = (call) => true;
+      expect(await GptomAidlPlugin().openApp(isDevAndroid: true), isFalse);
+      expect(nativeCalls, isEmpty);
+    });
+  });
+
   group('requestTransactionV2-Wire-Format', () {
     test('Beleg-Daten landen exakt im GPTom-Format im JSON', () async {
       nativeAnswer = (call) => jsonEncode({'result': 0});

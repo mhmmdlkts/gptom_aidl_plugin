@@ -317,6 +317,14 @@ public class GptomAidlPlugin implements FlutterPlugin, MethodChannel.MethodCallH
                 verifyArgument(call)).toMap());
         break;
       }
+      case "openGptomApp": {
+        // Startbildschirm von Genius Pay öffnen (Knopf in der Kasse).
+        String pkg = targetPackage(boolArgument(call, "isDev"));
+        List<String> pins = pinsArgument(call);
+        boolean verify = verifyArgument(call);
+        runOnMain(() -> result.success(openGptomUi(pkg, pins, verify)));
+        break;
+      }
       case "resetTrustedSignature": {
         trustPrefs().edit().remove(targetPackage(boolArgument(call, "isDev"))).apply();
         result.success(true);
@@ -903,7 +911,7 @@ public class GptomAidlPlugin implements FlutterPlugin, MethodChannel.MethodCallH
                 }
               });
               if (openGptomUI) {
-                runOnMain(() -> openGptomUi(paymentPackage));
+                runOnMain(() -> openGptomUi(paymentPackage, paymentPins, paymentVerify));
               }
             },
             e -> result.error(
@@ -915,23 +923,26 @@ public class GptomAidlPlugin implements FlutterPlugin, MethodChannel.MethodCallH
    * Holt GP tom nach vorn (Main-Thread). Die Signatur wird noch einmal
    * geprüft, falls die App inzwischen getauscht wurde. Fehler hier ändern
    * nichts an der laufenden Zahlung und werden nur protokolliert.
+   * Gibt zurück, ob der Start ans System übergeben wurde.
    */
-  private void openGptomUi(String paymentPackage) {
+  private boolean openGptomUi(String paymentPackage, List<String> pins, boolean verify) {
     try {
-      if (!verifyTarget(paymentPackage, paymentPins, paymentVerify).trusted) {
+      if (!verifyTarget(paymentPackage, pins, verify).trusted) {
         Log.w(TAG, "GP tom nicht vertrauenswürdig – UI nicht geöffnet");
-        return;
+        return false;
       }
       Intent openGptom = applicationContext.getPackageManager()
               .getLaunchIntentForPackage(paymentPackage);
       if (openGptom != null) {
         openGptom.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
         applicationContext.startActivity(openGptom);
-      } else {
-        Log.e(TAG, "requestTransactionV2: GPTom app not found!");
+        return true;
       }
+      Log.e(TAG, "openGptomUi: kein Start-Intent");
+      return false;
     } catch (Exception e) {
-      Log.e(TAG, "requestTransactionV2: GP tom konnte nicht geöffnet werden");
+      Log.e(TAG, "openGptomUi: GP tom konnte nicht geöffnet werden");
+      return false;
     }
   }
 

@@ -53,6 +53,10 @@ class FakeGptomAidlPluginPlatform extends GptomAidlPluginPlatform {
   int logoutCalls = 0;
   int getGpTomInfoCalls = 0;
   int checkGpTomAppCalls = 0;
+  /// isDev je Aufruf von openApp.
+  final List<bool> openAppCalls = [];
+  /// Antwort von openApp.
+  bool openAppResult = true;
   int resetTrustedSignatureCalls = 0;
   final List<Duration?> getGpTomInfoTimeouts = [];
 
@@ -123,6 +127,12 @@ class FakeGptomAidlPluginPlatform extends GptomAidlPluginPlatform {
   // --- GptomAidlPluginPlatform ----------------------------------------------
   @override
   Future<bool> existGpTomApp({bool isDevAndroid = false}) async => existsGpTomApp;
+
+  @override
+  Future<bool> openApp({bool isDevAndroid = false}) async {
+    openAppCalls.add(isDevAndroid);
+    return openAppResult;
+  }
 
   @override
   Future<GptomAppCheck> checkGpTomApp({bool isDevAndroid = false}) async {

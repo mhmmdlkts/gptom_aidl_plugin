@@ -114,4 +114,12 @@ void main() {
     expect(fake.checkGpTomAppCalls, 1);
     expect(fake.resetTrustedSignatureCalls, 1);
   });
+
+  test('openApp wird gezählt und liefert openAppResult', () async {
+    expect(await GptomAidlPluginPlatform.instance.openApp(), isTrue);
+    fake.openAppResult = false;
+    expect(await GptomAidlPluginPlatform.instance.openApp(isDevAndroid: true),
+        isFalse);
+    expect(fake.openAppCalls, [false, true]);
+  });
 }

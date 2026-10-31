@@ -410,4 +410,24 @@ void main() {
       expect(r.error?.errorCode, GptomErrorCode.noReceipt);
     });
   });
+
+  group('openApp (iOS)', () {
+    test('öffnet gptom:// und gibt das Ergebnis zurück', () async {
+      final geoeffnet = <Uri>[];
+      GptomAidlPluginIOS.debugLauncher = (uri) async {
+        geoeffnet.add(uri);
+        return true;
+      };
+      expect(await GptomAidlPluginIOS.openApp(), isTrue);
+      expect(geoeffnet.single.toString(), 'gptom://');
+
+      GptomAidlPluginIOS.debugLauncher = (uri) async => false;
+      expect(await GptomAidlPluginIOS.openApp(), isFalse);
+    });
+
+    test('Fehler beim Öffnen ergibt false', () async {
+      GptomAidlPluginIOS.debugLauncher = (uri) async => throw StateError('x');
+      expect(await GptomAidlPluginIOS.openApp(), isFalse);
+    });
+  });
 }

@@ -261,6 +261,15 @@ final result = await plugin.login(
 (`GptomLoginResult.outcome`, Standard 60 s) statt nur abzuschicken. Es läuft
 immer nur eine Konto-Operation zur Zeit, jede weitere ergibt `busy`.
 
+### Genius Pay öffnen
+
+```dart
+final geoeffnet = await plugin.openApp(); // false: nicht möglich, wirft nie
+```
+
+Öffnet den Startbildschirm der App, z. B. damit der Fahrer deren Meldung
+sieht. Android prüft vorher die Signatur wie beim Zahlungsstart.
+
 ### Morgen-Check
 
 `ensureLoggedIn()` prüft die GP tom App und den Status und meldet nur an,

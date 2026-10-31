@@ -20,6 +20,9 @@ class _FakePlatform extends GptomAidlPluginPlatform {
   Future<bool> existGpTomApp({bool isDevAndroid = false}) async => true;
 
   @override
+  Future<bool> openApp({bool isDevAndroid = false}) async => true;
+
+  @override
   Future<GptomAppCheck> checkGpTomApp({bool isDevAndroid = false}) async =>
       const GptomAppCheck(
           installed: true, trusted: true, source: GptomTrustSource.pinned);

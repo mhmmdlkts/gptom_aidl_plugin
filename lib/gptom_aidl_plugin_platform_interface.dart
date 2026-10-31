@@ -32,6 +32,11 @@ abstract class GptomAidlPluginPlatform extends PlatformInterface {
 
   Future<bool> existGpTomApp({bool isDevAndroid = false});
 
+  /// Öffnet den Startbildschirm der App. `true`: Start ans System übergeben;
+  /// `false`: nicht möglich (nicht installiert, Signatur nicht vertrauenswürdig,
+  /// Fehler). Wirft nie.
+  Future<bool> openApp({bool isDevAndroid = false}) async => false;
+
   /// Prüft die GP tom App (installiert, Signatur vertrauenswürdig).
   ///
   /// Achtung: Ohne konfigurierte Pins merkt sich der erste Aufruf den

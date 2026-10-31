@@ -47,6 +47,13 @@ class GptomAidlPlugin {
     return GptomAidlPluginPlatform.instance.existGpTomApp(isDevAndroid: isDevAndroid);
   }
 
+  /// Öffnet den Startbildschirm von Genius Pay, z. B. damit der Fahrer dessen
+  /// Meldung sieht. `true`: Start ans System übergeben; `false`: nicht möglich
+  /// (nicht installiert, Signatur nicht vertrauenswürdig, Fehler). Wirft nie.
+  Future<bool> openApp({bool isDevAndroid = false}) {
+    return GptomAidlPluginPlatform.instance.openApp(isDevAndroid: isDevAndroid);
+  }
+
   // ---------------------------------------------------------------------------
   // Bind Service
   // ---------------------------------------------------------------------------

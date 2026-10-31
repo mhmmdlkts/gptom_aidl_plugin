@@ -631,6 +631,91 @@ public class GptomTrustTest {
   }
 
   // ---------------------------------------------------------------------------
+  // openGptomApp (App per Knopf öffnen)
+  // ---------------------------------------------------------------------------
+
+  private Map<String, Object> openArgs(boolean isDev) {
+    Map<String, Object> args = new HashMap<>();
+    args.put("isDev", isDev);
+    return args;
+  }
+
+  @Test
+  public void openGptomApp_vertraut_startetMitNewTaskUndMeldetTrue() throws Exception {
+    installiereGpTom(PROD, ZERT_A);
+    gpTomStartActivity();
+    // Erstvertrauen: ohne Pins wird die Signatur beim ersten Prüfen gemerkt.
+
+    plugin.onMethodCall(new MethodCall("openGptomApp", openArgs(false)), result);
+    idleMainLooper();
+
+    verify(result).success(true);
+    Intent gestartet = shadowOf(app()).getNextStartedActivity();
+    assertNotNull(gestartet);
+    assertEquals(PROD, gestartet.getComponent().getPackageName());
+    assertTrue((gestartet.getFlags() & Intent.FLAG_ACTIVITY_NEW_TASK) != 0);
+  }
+
+  @Test
+  public void openGptomApp_nichtVertraut_false_keinStart() throws Exception {
+    installiereGpTom(PROD, ZERT_A);
+    gpTomStartActivity();
+    plugin.verifyTarget(PROD, Collections.<String>emptyList(), true);
+    // Ersetzt durch eine App mit fremdem Schlüssel.
+    installiereGpTom(PROD, ZERT_B);
+    gpTomStartActivity();
+
+    plugin.onMethodCall(new MethodCall("openGptomApp", openArgs(false)), result);
+    idleMainLooper();
+
+    verify(result).success(false);
+    assertNull(shadowOf(app()).getNextStartedActivity());
+  }
+
+  @Test
+  public void openGptomApp_pinsOhneTreffer_false_keinStart() throws Exception {
+    installiereGpTom(PROD, ZERT_A);
+    gpTomStartActivity();
+    Map<String, Object> args = openArgs(false);
+    args.put("trustedSignatures", Collections.singletonList(FP_B));
+    args.put("verifySignature", true);
+
+    plugin.onMethodCall(new MethodCall("openGptomApp", args), result);
+    idleMainLooper();
+
+    verify(result).success(false);
+    assertNull(shadowOf(app()).getNextStartedActivity());
+    // Auch kein Erstvertrauen, wenn Pins konfiguriert sind.
+    assertNull(gemerkterFingerprint(PROD));
+  }
+
+  @Test
+  public void openGptomApp_pinPasst_startet() throws Exception {
+    installiereGpTom(PROD, ZERT_A);
+    gpTomStartActivity();
+    Map<String, Object> args = openArgs(false);
+    args.put("trustedSignatures", Collections.singletonList(FP_A));
+    args.put("verifySignature", true);
+
+    plugin.onMethodCall(new MethodCall("openGptomApp", args), result);
+    idleMainLooper();
+
+    verify(result).success(true);
+    assertNotNull(shadowOf(app()).getNextStartedActivity());
+  }
+
+  @Test
+  public void openGptomApp_keinLaunchIntent_false() {
+    installiereGpTom(PROD, ZERT_A);
+
+    plugin.onMethodCall(new MethodCall("openGptomApp", openArgs(false)), result);
+    idleMainLooper();
+
+    verify(result).success(false);
+    assertNull(shadowOf(app()).getNextStartedActivity());
+  }
+
+  // ---------------------------------------------------------------------------
   // checkGpTomApp
   // ---------------------------------------------------------------------------
 

@@ -12,6 +12,7 @@ import 'package:gptom_aidl_plugin/gptom_result_code.dart';
 import 'package:gptom_aidl_plugin/models/request_result.dart';
 import 'package:url_launcher/url_launcher.dart';
 
+import 'gptom_aidl_plugin_ios.dart';
 import 'gptom_aidl_plugin_platform_interface.dart';
 import 'models/register_result.dart';
 import 'models/state_result.dart';
@@ -107,6 +108,23 @@ class MethodChannelGptomAidlPlugin extends GptomAidlPluginPlatform {
     return await methodChannel.invokeMethod<bool>('existGpTomApp', {
       'isDev': isDevAndroid,
     }) ?? false;
+  }
+
+  @override
+  Future<bool> openApp({bool isDevAndroid = false}) async {
+    try {
+      if (Platform.isIOS) {
+        return await GptomAidlPluginIOS.openApp();
+      }
+      if (_devGesperrt(isDevAndroid)) {
+        return false;
+      }
+      return await methodChannel.invokeMethod<bool>(
+              'openGptomApp', _sicherheitsArgs(isDevAndroid)) ??
+          false;
+    } catch (_) {
+      return false;
+    }
   }
 
   @override

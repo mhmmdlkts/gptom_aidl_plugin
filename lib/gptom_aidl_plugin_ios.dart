@@ -365,6 +365,19 @@ class GptomAidlPluginIOS {
     return launchUrl(uri);
   }
 
+  /// Öffnet nur den Startbildschirm von Genius Pay (ohne Redirect-Warten).
+  /// Fehler ergeben `false`.
+  static Future<bool> openApp() async {
+    try {
+      final launcher = debugLauncher;
+      final uri = Uri.parse('gptom://');
+      if (launcher != null) return await launcher(uri);
+      return await launchUrl(uri, mode: LaunchMode.externalApplication);
+    } catch (_) {
+      return false;
+    }
+  }
+
   /// Öffnet GP tom mit der URL aus [bauen] und wartet auf den zugehörigen
   /// Redirect. [bauen] bekommt die Redirect-URL für diesen Aufruf.
   ///
