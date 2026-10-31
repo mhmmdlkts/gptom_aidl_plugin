@@ -626,7 +626,7 @@ public class GptomTrustTest {
     // Kein Bezahlvorgang in einer App, deren Oberfläche nicht geöffnet würde.
     verify(service, never()).transactionRequestV2(anyString(), any());
     verify(result).error(
-        "UNTRUSTED_APP", "GP tom nicht vertrauenswürdig – Zahlung nicht gestartet.", null);
+        "UNTRUSTED_APP", "Genius Pay nicht vertrauenswürdig – Zahlung nicht gestartet.", null);
     assertNull(shadowOf(app()).getNextStartedActivity());
   }
 

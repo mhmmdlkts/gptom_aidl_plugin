@@ -313,7 +313,7 @@ public class GptomThreadingTest {
     idleMainLooper();
 
     verify(login).login(anyString());
-    verify(result).error("LOGIN_ERROR", "Login-Aufruf an GP tom fehlgeschlagen.", null);
+    verify(result).error("LOGIN_ERROR", "Login-Aufruf an Genius Pay fehlgeschlagen.", null);
   }
 
   @Test
@@ -340,10 +340,10 @@ public class GptomThreadingTest {
     account.runAll();
     idleMainLooper();
 
-    verify(logout).error("LOGOUT_ERROR", "Logout-Aufruf an GP tom fehlgeschlagen.", null);
+    verify(logout).error("LOGOUT_ERROR", "Logout-Aufruf an Genius Pay fehlgeschlagen.", null);
     verify(passwort).error(
-        "CHANGE_PASSWORD_ERROR", "Passwortwechsel-Aufruf an GP tom fehlgeschlagen.", null);
-    verify(status).error("INFO_ERROR", "Status-Abfrage an GP tom fehlgeschlagen.", null);
+        "CHANGE_PASSWORD_ERROR", "Passwortwechsel-Aufruf an Genius Pay fehlgeschlagen.", null);
+    verify(status).error("INFO_ERROR", "Status-Abfrage an Genius Pay fehlgeschlagen.", null);
   }
 
   @Test

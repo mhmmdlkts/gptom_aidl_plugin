@@ -274,7 +274,7 @@ class ErrorInfo {
       case -8:
         return 'Fehler, diese Operation ist nicht erlaubt.';
       case -9:
-        return 'Eine Eingabe durch den Benutzer in GP tom ist erforderlich.';
+        return 'Eine Eingabe durch den Benutzer in Genius Pay ist erforderlich.';
       default:
         return 'Unbekannter Fehler.';
     }

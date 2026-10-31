@@ -332,7 +332,7 @@ class GptomAccount {
     } on PlatformException {
       return const GptomLoginResult(
         outcome: GptomLoginOutcome.failed,
-        message: 'GP tom App konnte nicht geprüft werden.',
+        message: 'Genius-Pay-App konnte nicht geprüft werden.',
       );
     }
     if (!pruefung.installed) {
@@ -413,11 +413,11 @@ class GptomAccount {
         outcome: GptomLoginOutcome.failed,
         message: switch (op) {
           GptomAccountOperation.login =>
-            'Login konnte nicht an GP tom übergeben werden.',
+            'Login konnte nicht an Genius Pay übergeben werden.',
           GptomAccountOperation.logout =>
-            'Logout konnte nicht an GP tom übergeben werden.',
+            'Logout konnte nicht an Genius Pay übergeben werden.',
           GptomAccountOperation.changePassword =>
-            'Passwortwechsel konnte nicht an GP tom übergeben werden.',
+            'Passwortwechsel konnte nicht an Genius Pay übergeben werden.',
         },
       );
 }

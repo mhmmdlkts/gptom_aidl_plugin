@@ -1,3 +1,11 @@
+## 0.3.2
+
+* **Texte:** GP tom heißt jetzt Genius Pay. Alle deutschen Fehlermeldungen,
+  die eine App anzeigen kann, nennen den neuen Namen (Login, Logout,
+  Passwortwechsel, Status, Signaturprüfung, Zeitüberschreitung, „Konnte
+  Genius Pay nicht öffnen“, Benutzereingabe nötig). Klassen, Methoden,
+  Fehlercodes und Kanalnamen bleiben unverändert.
+
 ## 0.3.1
 
 * **Fix iOS:** Bei Verkauf, Storno und Rückerstattung ohne Beleg und ohne

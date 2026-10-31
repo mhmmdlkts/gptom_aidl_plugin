@@ -98,13 +98,13 @@ public class GptomAidlPlugin implements FlutterPlugin, MethodChannel.MethodCallH
   private static final String INFO_NOT_BOUND = "GPTom info service not bound yet.";
   // Feste Fehlertexte im Login-Pfad: die Meldung einer Exception könnte
   // Zugangsdaten enthalten und geht deshalb weder an Dart noch ins Log.
-  private static final String LOGIN_ERROR_TEXT = "Login-Aufruf an GP tom fehlgeschlagen.";
-  private static final String LOGOUT_ERROR_TEXT = "Logout-Aufruf an GP tom fehlgeschlagen.";
+  private static final String LOGIN_ERROR_TEXT = "Login-Aufruf an Genius Pay fehlgeschlagen.";
+  private static final String LOGOUT_ERROR_TEXT = "Logout-Aufruf an Genius Pay fehlgeschlagen.";
   private static final String CHANGE_PASSWORD_ERROR_TEXT =
-          "Passwortwechsel-Aufruf an GP tom fehlgeschlagen.";
-  private static final String INFO_ERROR_TEXT = "Status-Abfrage an GP tom fehlgeschlagen.";
+          "Passwortwechsel-Aufruf an Genius Pay fehlgeschlagen.";
+  private static final String INFO_ERROR_TEXT = "Status-Abfrage an Genius Pay fehlgeschlagen.";
   private static final String UNTRUSTED_PAYMENT_TEXT =
-          "GP tom nicht vertrauenswürdig – Zahlung nicht gestartet.";
+          "Genius Pay nicht vertrauenswürdig – Zahlung nicht gestartet.";
 
   /** Gemerkte Fingerprints für das Erstvertrauen, Key = Paketname. */
   private static final String TRUST_PREFS = "gptom_aidl_plugin_trust";
@@ -492,7 +492,7 @@ public class GptomAidlPlugin implements FlutterPlugin, MethodChannel.MethodCallH
   private Runnable startWatchdog(SingleResult result, long timeoutMs) {
     Runnable watchdog = () -> result.error(
             "TIMEOUT",
-            "GP tom hat binnen " + timeoutMs + " ms nicht geantwortet.");
+            "Genius Pay hat binnen " + timeoutMs + " ms nicht geantwortet.");
     if (timeoutMs > 0) {
       mainHandler.postDelayed(watchdog, timeoutMs);
     }

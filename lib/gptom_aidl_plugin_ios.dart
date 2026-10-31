@@ -560,7 +560,7 @@ class GptomAidlPluginIOS {
     if (antwort.cannotOpen) {
       throw PlatformException(
         code: 'PlatformError',
-        message: 'Konnte GP tom nicht öffnen',
+        message: 'Konnte Genius Pay nicht öffnen',
       );
     }
 
@@ -1154,7 +1154,7 @@ class GptomAidlPluginIOS {
         return _pluginFehler(
           GptomResultCode.cannotOpen,
           GptomErrorCode.cannotOpen,
-          'Konnte GP tom nicht öffnen',
+          'Konnte Genius Pay nicht öffnen',
           requestId: requestId,
         );
       }
@@ -1293,7 +1293,7 @@ class GptomAidlPluginIOS {
       return _pluginFehler(
         GptomResultCode.cannotOpen,
         GptomErrorCode.cannotOpen,
-        'Konnte GP tom nicht öffnen',
+        'Konnte Genius Pay nicht öffnen',
         requestId: vorgangsId,
       );
     }
